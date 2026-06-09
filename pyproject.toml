@@ -1,0 +1,35 @@
+[project]
+name = "lingchat"
+version = "0.0.1"
+description = "Web UI front-end for LingCore agents"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "lingcore",
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.34.0",
+]
+
+[project.scripts]
+lingchat = "lingchat.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["lingchat"]
+
+# LingChat consumes the sibling lingcore package as an editable path dependency.
+[tool.uv.sources]
+lingcore = { path = "..", editable = true }
+
+[dependency-groups]
+dev = [
+    "pytest==9.0.3",
+    "pytest-asyncio==1.4.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
