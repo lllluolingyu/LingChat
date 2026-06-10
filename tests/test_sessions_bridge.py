@@ -209,7 +209,7 @@ def test_sessions_disabled_profile(tmp_path):
     client = TestClient(app)
 
     listing = client.get("/api/sessions").json()
-    assert listing == {"enabled": False, "sessions": []}
+    assert listing == {"enabled": False, "notice": None, "sessions": []}
 
     with client.websocket_connect("/ws") as ws:
         assert ws.receive_json()["session"] is None
@@ -219,3 +219,18 @@ def test_sessions_disabled_profile(tmp_path):
 
     assert not (tmp_path / "sessions.db").exists()
     assert client.get(f"/api/sessions/{'a' * 32}").status_code == 404
+
+
+def test_sessions_in_package_profile_serves_notice(tmp_path, monkeypatch):
+    """A profile inside the installed package can't persist — the API says why."""
+    import lingcore.sessions as sessions_mod
+
+    monkeypatch.setattr(sessions_mod, "_PACKAGE_DIR", tmp_path.resolve())
+    profile = _write_profile(tmp_path)
+    app = create_app(profile, llm_factory=lambda: FakeLLM([]))
+    client = TestClient(app)
+
+    listing = client.get("/api/sessions").json()
+    assert listing["enabled"] is False
+    assert "inside the installed" in listing["notice"]
+    assert not (tmp_path / "sessions.db").exists()

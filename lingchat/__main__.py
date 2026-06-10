@@ -3,7 +3,7 @@
 Composition root for the web frontend: parse args, build the FastAPI app for
 the chosen profile, and launch uvicorn. Binds to 127.0.0.1 by default — the
 agent can run shell commands, so exposing this port is remote code execution.
-Pair it with the ``coding_sandboxed`` profile when you need containment.
+Pair it with a sandbox-isolated profile when you need containment.
 """
 
 from __future__ import annotations
@@ -15,9 +15,9 @@ import uvicorn
 
 from lingchat.server import create_app
 
-_DEFAULT_PROFILE = (
-    Path(__file__).resolve().parents[2] / "lingcore" / "profiles" / "coding"
-)
+# The LingCore repo's bundled profiles live at its root, outside the package
+# tree, so sessions persist for them by default.
+_DEFAULT_PROFILE = Path(__file__).resolve().parents[2] / "profiles" / "coding"
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

@@ -8,7 +8,8 @@
 // ?session= on (re)connect, so a reload or server restart resumes the same
 // stored conversation instead of silently starting a fresh agent. The
 // sidebar lists stored sessions from GET /api/sessions; "hello" is
-// authoritative for which session this socket actually attached to.
+// authoritative for which session this socket actually attached to. When the
+// profile can't persist, the sidebar stays visible and shows the reason.
 
 (() => {
   "use strict";
@@ -87,8 +88,20 @@
     } catch {
       return;
     }
-    document.body.classList.toggle("no-sessions", !data.enabled);
-    if (data.enabled) renderSessionList(data.sessions);
+    if (!data.enabled) {
+      renderSessionsDisabled(data.notice);
+      return;
+    }
+    renderSessionList(data.sessions);
+  }
+
+  function renderSessionsDisabled(notice) {
+    sessionListEl.textContent = "";
+    const note = document.createElement("div");
+    note.className = "sidebar-note";
+    note.textContent =
+      notice || "session history is off for this profile (sessions.enabled: false)";
+    sessionListEl.appendChild(note);
   }
 
   function renderSessionList(sessions) {

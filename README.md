@@ -20,11 +20,13 @@ LingChat/
 ```bash
 cd LingChat
 uv sync                                   # installs fastapi/uvicorn + editable lingcore
-uv run lingchat -p ../lingcore/profiles/coding_sandboxed
+uv run lingchat                           # serves the repo's coding profile by default
 # then open http://127.0.0.1:8000
 ```
 
 Flags: `-p/--profile <path>`, `-w/--workspace <dir>`, `--host`, `--port`.
+Without `-w` the agent works in the profile's own `workspace/` directory
+(auto-created) — pass `-w /path/to/project` to point it at real files.
 
 ## Sessions
 
@@ -37,20 +39,24 @@ session id lives in the URL hash and is sent as `?session=<id>` on every
 restart — resumes the same conversation instead of silently starting a fresh
 agent. A session already open in another tab is refused with `session_busy`.
 
-Bundled in-package profiles can't persist (writes into the package tree are
-refused), so the server prints a notice and the sidebar hides itself — copy the
-profile directory out of the package to keep history.
+The bundled profiles live at the LingCore repo root (`profiles/`), outside the
+installed package, so they keep history out of the box. When a profile *can't*
+persist — it sits inside an installed package, or sets
+`sessions.enabled: false` — the sidebar stays visible and shows why instead of
+listing sessions (the reason also appears in the server log and as `notice` in
+`GET /api/sessions`).
 
-REST, for the sidebar: `GET /api/sessions` (list), `GET /api/sessions/{id}`
-(transcript), `PATCH /api/sessions/{id}` (`{"title": ...}` rename),
+REST, for the sidebar: `GET /api/sessions` (list; carries `notice` when
+persistence is off), `GET /api/sessions/{id}` (transcript),
+`PATCH /api/sessions/{id}` (`{"title": ...}` rename),
 `DELETE /api/sessions/{id}` (409 while attached to a live socket).
 
 ## ⚠️ Security
 
 The agent can run shell commands, so **the server is bound to `127.0.0.1` by
 default**. Exposing the port to a network is remote code execution. If you must,
-pair it with the `coding_sandboxed` profile (bubblewrap-isolated shell) — and
-even then, treat it as trusted-local only.
+pair it with a profile whose shell is sandboxed — and even then, treat it as
+trusted-local only.
 
 ## Protocol
 

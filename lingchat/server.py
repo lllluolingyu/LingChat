@@ -258,9 +258,12 @@ def create_app(
     @app.get("/api/sessions")
     async def list_sessions() -> dict[str, Any]:
         if store is None:
-            return {"enabled": False, "sessions": []}
+            # notice tells the sidebar *why* history is off (None when the
+            # profile opted out via sessions.enabled: false).
+            return {"enabled": False, "notice": notice, "sessions": []}
         return {
             "enabled": True,
+            "notice": None,
             "sessions": [s.model_dump(mode="json") for s in store.list()],
         }
 
