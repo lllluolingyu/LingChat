@@ -26,6 +26,25 @@ uv run lingchat -p ../lingcore/profiles/coding_sandboxed
 
 Flags: `-p/--profile <path>`, `-w/--workspace <dir>`, `--host`, `--port`.
 
+## Sessions
+
+Conversations persist through lingcore's session store (`sessions.db` in the
+profile directory — see LingCore invariant 14). The sidebar lists stored
+sessions; **＋ New chat** starts a fresh one, clicking a session switches to it
+(the transcript is replayed from storage), and **×** deletes it. The current
+session id lives in the URL hash and is sent as `?session=<id>` on every
+(re)connect, so a page reload — or the client's auto-reconnect after a server
+restart — resumes the same conversation instead of silently starting a fresh
+agent. A session already open in another tab is refused with `session_busy`.
+
+Bundled in-package profiles can't persist (writes into the package tree are
+refused), so the server prints a notice and the sidebar hides itself — copy the
+profile directory out of the package to keep history.
+
+REST, for the sidebar: `GET /api/sessions` (list), `GET /api/sessions/{id}`
+(transcript), `PATCH /api/sessions/{id}` (`{"title": ...}` rename),
+`DELETE /api/sessions/{id}` (409 while attached to a live socket).
+
 ## ⚠️ Security
 
 The agent can run shell commands, so **the server is bound to `127.0.0.1` by
@@ -35,9 +54,12 @@ even then, treat it as trusted-local only.
 
 ## Protocol
 
+Connect with `ws://host/ws?session=<id>` to resume a stored session (omit for a
+fresh one; the `hello` reply carries the authoritative id).
 Client → server: `{type:"user", text}` and `{type:"confirm_response", approved}`.
-Server → client: `hello`, `text`, `tool_call`, `tool_result`, `skill`,
-`confirm`, `final`, `error`, `turn_end` (see `lingchat/server.py:_event_to_msg`).
+Server → client: `hello` (incl. `session`, `title`), `session_busy`, `text`,
+`tool_call`, `tool_result`, `skill`, `confirm`, `final`, `error`, `turn_end`
+(see `lingchat/server.py:_event_to_msg`).
 
 ## Test
 
