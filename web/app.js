@@ -72,6 +72,7 @@
   const MAX_ATTACHMENTS = 4;
   const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
   const MAX_FILE_BYTES = 10 * 1024 * 1024;
+  const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
   const ALLOWED_MEDIA = new Set([
     "image/png",
     "image/jpeg",
@@ -1076,10 +1077,19 @@
     };
   }
 
+  function pendingTotalBytes() {
+    // Decoded size from base64 length (4 chars -> 3 bytes), close enough for the cap.
+    return pendingAttachments.reduce((n, a) => n + Math.floor(a.data.length * 0.75), 0);
+  }
+
   async function addFiles(files) {
     for (const file of files) {
       if (pendingAttachments.length >= MAX_ATTACHMENTS) {
         addNote("error", `You can attach at most ${MAX_ATTACHMENTS} files per message.`);
+        break;
+      }
+      if (pendingTotalBytes() + file.size > MAX_TOTAL_BYTES) {
+        addNote("error", `Attachments exceed the ${Math.floor(MAX_TOTAL_BYTES / (1024 * 1024))}MB total limit per message.`);
         break;
       }
       try {

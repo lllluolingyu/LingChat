@@ -225,11 +225,19 @@ class WebSession:
                 text = str(msg.get("text", ""))
                 try:
                     attachments = _validate_attachments(msg.get("attachments"))
+                    # UserInput re-validates the *aggregate* (count + total
+                    # decoded size); pydantic's ValidationError subclasses
+                    # ValueError, so an over-limit batch is refused here as a
+                    # per-turn error instead of killing the socket.
+                    incoming = (
+                        UserInput(text=text, attachments=attachments)
+                        if text.strip() or attachments
+                        else None
+                    )
                 except ValueError as e:
                     await self.ws.send_json({"type": "error", "message": f"attachment error: {e}"})
                     continue
-                if text.strip() or attachments:
-                    incoming = UserInput(text=text, attachments=attachments)
+                if incoming is not None:
                     # Launch concurrently so confirm replies can still be read.
                     asyncio.create_task(self._run_turn(incoming))
             elif kind == "confirm_response":

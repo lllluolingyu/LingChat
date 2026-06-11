@@ -119,6 +119,37 @@ def test_websocket_attachment_reaches_agent(tmp_path):
     assert data["messages"][0]["attachments"][0]["media_type"] == "image/png"
 
 
+def test_websocket_over_total_attachment_limit_is_per_turn_error(tmp_path, monkeypatch):
+    # Per-attachment checks pass but the aggregate exceeds the UserInput total
+    # cap. That must come back as an error message on the socket — and the
+    # connection must survive to run a normal turn afterwards.
+    import lingcore.message as message_mod
+
+    monkeypatch.setattr(message_mod, "TOTAL_ATTACHMENT_MAX_BYTES", 32)
+    profile = _write_profile(tmp_path)
+    fake = FakeLLM([{"text": "still alive"}])
+    app = create_app(profile, llm_factory=lambda: fake)
+    client = TestClient(app)
+    payload = {
+        "kind": "image",
+        "media_type": "image/png",
+        "name": "pic.png",
+        "data": base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"x" * 24).decode("ascii"),
+    }
+
+    with client.websocket_connect("/ws") as ws:
+        ws.receive_json()  # hello
+        ws.send_json({"type": "user", "text": "big", "attachments": [payload, payload]})
+        err = ws.receive_json()
+        assert err["type"] == "error"
+        assert "attachment" in err["message"]
+
+        # The socket is still usable.
+        ws.send_json({"type": "user", "text": "hello"})
+        msgs = _drain_until(ws, "turn_end")
+        assert any(m["type"] == "final" and m["text"] == "still alive" for m in msgs)
+
+
 def test_transcript_display_shapes(tmp_path):
     profile = _write_profile(tmp_path)
     turns = [
