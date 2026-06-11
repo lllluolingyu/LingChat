@@ -8,6 +8,7 @@ the store lands at ``<tmp profile dir>/sessions.db``.
 
 from __future__ import annotations
 
+import base64
 import time
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -93,6 +94,29 @@ def test_turn_is_stored_and_listed(tmp_path):
     assert [s["id"] for s in listing["sessions"]] == [sid]
     assert listing["sessions"][0]["title"] == "first question"
     assert listing["sessions"][0]["message_count"] == 2
+
+
+def test_websocket_attachment_reaches_agent(tmp_path):
+    profile = _write_profile(tmp_path)
+    fake = FakeLLM([{"text": "seen"}])
+    app = create_app(profile, llm_factory=lambda: fake)
+    client = TestClient(app)
+    payload = {
+        "kind": "image",
+        "media_type": "image/png",
+        "name": "pic.png",
+        "data": base64.b64encode(b"\x89PNG\r\n\x1a\nrest").decode("ascii"),
+    }
+
+    with client.websocket_connect("/ws") as ws:
+        sid = ws.receive_json()["session"]
+        ws.send_json({"type": "user", "text": "describe", "attachments": [payload]})
+        _drain_until(ws, "turn_end")
+
+    assert fake.calls[0][1].role == "user"
+    assert fake.calls[0][1].attachments[0].name == "pic.png"
+    data = client.get(f"/api/sessions/{sid}").json()
+    assert data["messages"][0]["attachments"][0]["media_type"] == "image/png"
 
 
 def test_transcript_display_shapes(tmp_path):

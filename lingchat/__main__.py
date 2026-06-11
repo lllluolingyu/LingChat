@@ -50,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
             f"WARNING: binding to {args.host} exposes an agent that can run shell "
             "commands — this is remote code execution. Use a sandboxed profile.",
         )
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn.run(app, host=args.host, port=args.port, ws_max_size=64 * 1024 * 1024)
     return 0
 
 

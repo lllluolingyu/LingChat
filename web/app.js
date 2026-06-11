@@ -26,6 +26,9 @@
   const formEl = $("composer");
   const inputEl = $("input");
   const sendEl = $("send");
+  const attachEl = $("attach");
+  const fileInputEl = $("file-input");
+  const attachmentTrayEl = $("attachment-tray");
   const statusPill = $("status-pill");
   const statusText = $("status-text");
   const agentChip = $("agent-chip");
@@ -64,6 +67,18 @@
   let stick = true; // keep the view glued to the newest message
   let agentName = "the agent";
   let modelName = "";
+  let pendingAttachments = [];
+
+  const MAX_ATTACHMENTS = 4;
+  const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+  const MAX_FILE_BYTES = 10 * 1024 * 1024;
+  const ALLOWED_MEDIA = new Set([
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "application/pdf",
+  ]);
 
   // --- markdown ------------------------------------------------------------
 
@@ -326,11 +341,48 @@
     return el;
   }
 
-  function addUserMessage(text) {
-    const r = row("user");
+  function attachmentUrl(a) {
+    return `data:${a.media_type};base64,${a.data}`;
+  }
+
+  function attachmentLabel(a) {
+    return a.name || a.media_type || "attachment";
+  }
+
+  function renderAttachments(container, attachments = []) {
+    if (!attachments.length) return;
+    const grid = document.createElement("div");
+    grid.className = "attachment-grid";
+    for (const a of attachments) {
+      const item = document.createElement("div");
+      item.className = "attachment-card";
+      if (a.kind === "image") {
+        const img = document.createElement("img");
+        img.alt = attachmentLabel(a);
+        img.src = attachmentUrl(a);
+        item.appendChild(img);
+      } else {
+        const icon = document.createElement("div");
+        icon.className = "attachment-file-icon";
+        icon.textContent = "PDF";
+        item.appendChild(icon);
+      }
+      const name = document.createElement("div");
+      name.className = "attachment-name";
+      name.textContent = attachmentLabel(a);
+      item.appendChild(name);
+      grid.appendChild(item);
+    }
+    container.appendChild(grid);
+  }
+
+  function addUserMessage(text, attachments = [], synthetic = false) {
+    const r = row(synthetic ? "event" : "user");
     const bubble = document.createElement("div");
-    bubble.className = "bubble-user";
-    bubble.textContent = text;
+    bubble.className = synthetic ? "note system media-note" : "bubble-user";
+    if (text) bubble.appendChild(document.createTextNode(text));
+    else bubble.appendChild(document.createTextNode("Attached media"));
+    renderAttachments(bubble, attachments);
     r.appendChild(bubble);
     scrollToBottom();
   }
@@ -476,18 +528,20 @@
     return card;
   }
 
-  function resolveToolCard(name, ok, content) {
+  function resolveToolCard(name, ok, content, attachments = []) {
     const idx = pendingTools.findIndex((t) => t.name === name);
     if (idx >= 0) {
       const t = pendingTools.splice(idx, 1)[0];
       t.status.innerHTML = ok ? OK_ICON : ERR_ICON;
       t.body.appendChild(toolSection(ok ? "Result" : "Error", content, !ok));
+      renderAttachments(t.body, attachments);
     } else {
       // A result with no visible call (shouldn't happen, but render honestly).
       addToolCard(name, null);
       const t = pendingTools.pop();
       t.status.innerHTML = ok ? OK_ICON : ERR_ICON;
       t.body.appendChild(toolSection(ok ? "Result" : "Error", content, !ok));
+      renderAttachments(t.body, attachments);
     }
     scrollToBottom();
   }
@@ -558,7 +612,7 @@
   }
 
   function updateSendState() {
-    sendEl.disabled = !connected || !inputEl.value.trim();
+    sendEl.disabled = !connected || (!inputEl.value.trim() && !pendingAttachments.length);
   }
 
   function setChatTitle(title) {
@@ -775,14 +829,14 @@
     // streaming event shapes handle() deals in.
     for (const m of messages) {
       if (m.role === "user") {
-        addUserMessage(m.text);
+        addUserMessage(m.text, m.attachments || [], m.name === "media");
       } else if (m.role === "assistant") {
         if (m.text) addAgentMarkdown(m.text);
         for (const tc of m.tool_calls || []) {
           addToolCard(tc.name, tc.arguments);
         }
       } else if (m.role === "tool") {
-        resolveToolCard(m.name, m.ok, m.content);
+        resolveToolCard(m.name, m.ok, m.content, m.attachments || []);
       }
     }
     pendingTools = []; // anything unresolved belongs to a crashed turn; don't pair it later
@@ -871,7 +925,7 @@
         addToolCard(msg.name, msg.arguments);
         break;
       case "tool_result":
-        resolveToolCard(msg.name, msg.ok, msg.content);
+        resolveToolCard(msg.name, msg.ok, msg.content, msg.attachments || []);
         showTyping(); // the model is reading the result
         break;
       case "skill":
@@ -991,14 +1045,82 @@
 
   // --- composer -------------------------------------------------------------------
 
+  function mediaTypeForFile(file) {
+    if (file.type) return file.type;
+    const name = file.name.toLowerCase();
+    if (name.endsWith(".png")) return "image/png";
+    if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
+    if (name.endsWith(".gif")) return "image/gif";
+    if (name.endsWith(".webp")) return "image/webp";
+    if (name.endsWith(".pdf")) return "application/pdf";
+    return "";
+  }
+
+  async function fileToAttachment(file) {
+    const mediaType = mediaTypeForFile(file);
+    if (!ALLOWED_MEDIA.has(mediaType)) throw new Error(`unsupported file type: ${mediaType || file.name}`);
+    const limit = mediaType.startsWith("image/") ? MAX_IMAGE_BYTES : MAX_FILE_BYTES;
+    if (file.size > limit) throw new Error(`${file.name} is too large (${file.size} bytes)`);
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error || new Error("failed to read file"));
+      reader.readAsDataURL(file);
+    });
+    const data = dataUrl.split(",", 2)[1] || "";
+    return {
+      kind: mediaType.startsWith("image/") ? "image" : "file",
+      media_type: mediaType,
+      data,
+      name: file.name || (mediaType === "application/pdf" ? "attachment.pdf" : "image.png"),
+    };
+  }
+
+  async function addFiles(files) {
+    for (const file of files) {
+      if (pendingAttachments.length >= MAX_ATTACHMENTS) {
+        addNote("error", `You can attach at most ${MAX_ATTACHMENTS} files per message.`);
+        break;
+      }
+      try {
+        pendingAttachments.push(await fileToAttachment(file));
+      } catch (e) {
+        addNote("error", e.message || String(e));
+      }
+    }
+    renderAttachmentTray();
+    updateSendState();
+  }
+
+  function renderAttachmentTray() {
+    attachmentTrayEl.textContent = "";
+    attachmentTrayEl.hidden = !pendingAttachments.length;
+    pendingAttachments.forEach((attachment, index) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "attachment-chip";
+      chip.title = "Remove attachment";
+      chip.textContent = `${attachment.kind === "image" ? "🖼" : "📄"} ${attachmentLabel(attachment)} ×`;
+      chip.addEventListener("click", () => {
+        pendingAttachments.splice(index, 1);
+        renderAttachmentTray();
+        updateSendState();
+      });
+      attachmentTrayEl.appendChild(chip);
+    });
+  }
+
   function send() {
     const text = inputEl.value.trim();
-    if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
-    addUserMessage(text);
+    if ((!text && !pendingAttachments.length) || !ws || ws.readyState !== WebSocket.OPEN) return;
+    const attachments = pendingAttachments;
+    addUserMessage(text, attachments);
     finalizeAgentMessage();
     stick = true;
-    ws.send(JSON.stringify({ type: "user", text }));
+    ws.send(JSON.stringify({ type: "user", text, attachments }));
     inputEl.value = "";
+    pendingAttachments = [];
+    renderAttachmentTray();
     autosize();
     updateSendState();
     showTyping();
@@ -1024,6 +1146,16 @@
   inputEl.addEventListener("input", () => {
     autosize();
     updateSendState();
+  });
+
+  attachEl.addEventListener("click", () => fileInputEl.click());
+  fileInputEl.addEventListener("change", () => {
+    addFiles(fileInputEl.files || []);
+    fileInputEl.value = "";
+  });
+  inputEl.addEventListener("paste", (e) => {
+    const files = Array.from(e.clipboardData?.files || []);
+    if (files.length) addFiles(files);
   });
 
   // --- theme ---------------------------------------------------------------------

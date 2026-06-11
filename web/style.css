@@ -451,6 +451,48 @@ main#messages {
   overflow-wrap: anywhere;
   box-shadow: var(--shadow-1);
 }
+.bubble-user .attachment-grid { margin-top: 8px; }
+.attachment-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.attachment-card {
+  width: 132px;
+  min-height: 72px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 10px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  color: var(--text);
+}
+.attachment-card img {
+  display: block;
+  width: 100%;
+  height: 86px;
+  object-fit: cover;
+}
+.attachment-file-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 54px;
+  font-weight: 750;
+  letter-spacing: 0.8px;
+  color: var(--err);
+  background: var(--err-soft);
+}
+.attachment-name {
+  padding: 5px 7px;
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.media-note {
+  flex-direction: column;
+  align-items: flex-start;
+}
 
 /* agent message: avatar + rendered content on the canvas */
 .row.agent {
@@ -820,6 +862,29 @@ main#messages {
 .composer-inner {
   max-width: var(--thread-w);
   margin: 0 auto;
+}
+
+.attachment-tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 4px 7px;
+}
+.attachment-tray[hidden] { display: none; }
+.attachment-chip {
+  padding: 5px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+.attachment-chip:hover { background: var(--surface-2); color: var(--text); }
+.attach-btn {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
 }
 
 .input-shell {

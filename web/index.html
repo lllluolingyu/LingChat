@@ -88,7 +88,12 @@
 
     <form id="composer" autocomplete="off">
       <div class="composer-inner">
+        <div id="attachment-tray" class="attachment-tray" hidden></div>
         <div class="input-shell">
+          <button id="attach" class="icon-btn attach-btn" type="button" aria-label="Attach image or PDF" title="Attach image or PDF">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.2 8.5l4.6-4.6a2.3 2.3 0 0 1 3.3 3.3l-5.5 5.5a3.6 3.6 0 0 1-5.1-5.1l5.4-5.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <input id="file-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf" multiple hidden />
           <textarea id="input" rows="1" placeholder="Message the agent…" aria-label="Message"></textarea>
           <button id="send" type="submit" aria-label="Send message" title="Send" disabled>
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.2 8L13.8 2.6 11 13.6l-3-3.8zM8 9.8l5.8-7.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>

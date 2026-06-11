@@ -48,7 +48,8 @@ from lingcore.events import (
     ToolCallStarted,
     ToolResultEvent,
 )
-from lingcore.message import Message
+from lingcore.message import Attachment, Message, UserInput
+from lingcore.media import attachment_from_wire
 from lingcore.sessions import SessionStore, is_session_id, new_session_id, open_store
 
 _WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -58,6 +59,27 @@ _WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 # drive the bridge with a scripted fake, and embedders can use to inject a
 # custom backend.
 LLMFactory = Callable[[], Any]
+_MAX_ATTACHMENTS = 4
+
+
+def _attachment_payloads(attachments: list[Attachment]) -> list[dict[str, Any]]:
+    return [a.model_dump() for a in attachments]
+
+
+def _validate_attachments(raw: object) -> list[Attachment]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("attachments must be a list")
+    if len(raw) > _MAX_ATTACHMENTS:
+        raise ValueError(f"too many attachments ({len(raw)}; limit {_MAX_ATTACHMENTS})")
+    out: list[Attachment] = []
+    for item in raw:
+        try:
+            out.append(attachment_from_wire(item))
+        except Exception as e:
+            raise ValueError(str(e)) from None
+    return out
 
 
 def _event_to_msg(event: AgentEvent) -> dict[str, Any]:
@@ -73,6 +95,7 @@ def _event_to_msg(event: AgentEvent) -> dict[str, Any]:
                 "name": result.name,
                 "ok": result.ok,
                 "content": result.content,
+                "attachments": _attachment_payloads(result.attachments),
             }
         case SkillActivated(name, active):
             return {"type": "skill", "name": name, "active": active}
@@ -99,7 +122,12 @@ def _stored_to_display(m: Message) -> dict[str, Any]:
     ``ok`` reflects here.
     """
     if m.role == "user":
-        return {"role": "user", "text": m.content}
+        return {
+            "role": "user",
+            "text": m.content,
+            "name": m.name,
+            "attachments": _attachment_payloads(m.attachments),
+        }
     if m.role == "assistant":
         return {
             "role": "assistant",
@@ -162,11 +190,11 @@ class WebSession:
         finally:
             self._pending_confirm = None
 
-    async def _run_turn(self, text: str) -> None:
+    async def _run_turn(self, incoming: UserInput) -> None:
         # Serialize turns so one connection's runs share memory safely.
         async with self._run_lock:
             try:
-                async for event in self.agent.run(text):
+                async for event in self.agent.run(incoming):
                     await self.ws.send_json(_event_to_msg(event))
             except WebSocketDisconnect:
                 raise
@@ -195,9 +223,15 @@ class WebSession:
             kind = msg.get("type")
             if kind == "user":
                 text = str(msg.get("text", ""))
-                if text.strip():
+                try:
+                    attachments = _validate_attachments(msg.get("attachments"))
+                except ValueError as e:
+                    await self.ws.send_json({"type": "error", "message": f"attachment error: {e}"})
+                    continue
+                if text.strip() or attachments:
+                    incoming = UserInput(text=text, attachments=attachments)
                     # Launch concurrently so confirm replies can still be read.
-                    asyncio.create_task(self._run_turn(text))
+                    asyncio.create_task(self._run_turn(incoming))
             elif kind == "confirm_response":
                 fut = self._pending_confirm
                 if fut is not None and not fut.done():
