@@ -4,39 +4,117 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>LingChat</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Cdefs%3E%3ClinearGradient%20id='g'%20x1='0'%20y1='0'%20x2='1'%20y2='1'%3E%3Cstop%20offset='0'%20stop-color='%236366f1'/%3E%3Cstop%20offset='1'%20stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20width='32'%20height='32'%20rx='8'%20fill='url(%23g)'/%3E%3Cpath%20d='M16%206.5l1.9%206%206.1%201.9-6.1%201.9-1.9%206-1.9-6-6.1-1.9%206.1-1.9z'%20fill='white'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="/style.css" />
+  <script>
+    // Apply the stored theme before first paint to avoid a flash.
+    (() => {
+      try {
+        const t = localStorage.getItem("lingchat-theme");
+        if (t === "light" || (t === null && matchMedia("(prefers-color-scheme: light)").matches)) {
+          document.documentElement.dataset.theme = "light";
+        }
+      } catch { /* storage may be unavailable; default theme is fine */ }
+    })();
+  </script>
 </head>
 <body>
-  <aside id="sidebar">
-    <button id="new-chat" class="btn">＋ New chat</button>
+  <div id="backdrop" hidden></div>
+
+  <aside id="sidebar" aria-label="Sessions">
+    <div class="sidebar-head">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+          <defs>
+            <linearGradient id="brand-g" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#6366f1"/>
+              <stop offset="1" stop-color="#8b5cf6"/>
+            </linearGradient>
+          </defs>
+          <rect width="32" height="32" rx="8" fill="url(#brand-g)"/>
+          <path d="M16 6.5l1.9 6 6.1 1.9-6.1 1.9-1.9 6-1.9-6-6.1-1.9 6.1-1.9z" fill="white"/>
+        </svg>
+        <span class="brand-name">Ling<em>Chat</em></span>
+      </div>
+      <button id="sidebar-close" class="icon-btn" aria-label="Close sidebar" title="Close sidebar">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+
+    <button id="new-chat" class="new-chat-btn">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.2v9.6M3.2 8h9.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+      New chat
+    </button>
+
     <nav id="session-list" aria-label="Stored sessions"></nav>
+
+    <div class="sidebar-foot">
+      <button id="theme-toggle" class="theme-toggle" title="Toggle theme">
+        <svg class="theme-icon-dark" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M13.4 9.6A5.6 5.6 0 0 1 6.4 2.6a5.6 5.6 0 1 0 7 7z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+        </svg>
+        <svg class="theme-icon-light" viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="8" cy="8" r="3.1" fill="none" stroke="currentColor" stroke-width="1.4"/>
+          <path d="M8 1.2v1.9M8 12.9v1.9M1.2 8h1.9M12.9 8h1.9M3.2 3.2l1.3 1.3M11.5 11.5l1.3 1.3M12.8 3.2l-1.3 1.3M4.5 11.5l-1.3 1.3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        </svg>
+        <span id="theme-label">Theme</span>
+      </button>
+    </div>
   </aside>
 
   <div id="chat">
-    <header>
-      <div class="brand">Ling<span>Chat</span></div>
-      <div class="meta" id="meta">
-        <span class="dot" id="status-dot" title="disconnected"></span>
-        <span id="agent-info">connecting…</span>
+    <header id="topbar">
+      <button id="menu-btn" class="icon-btn" aria-label="Open sidebar" title="Open sidebar">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+      <h1 id="chat-title" title="">New chat</h1>
+      <div class="topbar-meta">
+        <span id="agent-chip" class="agent-chip" hidden></span>
+        <span id="status-pill" class="status-pill" data-state="connecting">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="status-text">Connecting</span>
+        </span>
       </div>
     </header>
 
-    <main id="messages" aria-live="polite"></main>
+    <div id="conn-banner" hidden>Connection lost — reconnecting…</div>
+
+    <main id="messages">
+      <div id="thread" aria-live="polite"></div>
+      <button id="jump-bottom" class="jump-bottom" hidden aria-label="Scroll to latest">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v9.4M3.8 8.6L8 12.8l4.2-4.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </main>
 
     <form id="composer" autocomplete="off">
-      <textarea id="input" rows="1" placeholder="Message the agent…  (Enter to send, Shift+Enter for newline)"></textarea>
-      <button id="send" type="submit">Send</button>
+      <div class="composer-inner">
+        <div class="input-shell">
+          <textarea id="input" rows="1" placeholder="Message the agent…" aria-label="Message"></textarea>
+          <button id="send" type="submit" aria-label="Send message" title="Send" disabled>
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.2 8L13.8 2.6 11 13.6l-3-3.8zM8 9.8l5.8-7.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+        <p class="composer-hint"><kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line</p>
+      </div>
     </form>
   </div>
 
   <!-- Inline shell-confirmation prompt, shown only when the agent asks. -->
-  <div id="confirm" class="confirm hidden">
-    <div class="confirm-body">
-      <div class="confirm-label">Run shell command?</div>
+  <div id="confirm" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <div class="modal-card">
+      <div class="modal-head">
+        <span class="modal-icon" aria-hidden="true">
+          <svg viewBox="0 0 16 16"><path d="M3 4.5l3.5 3.5L3 11.5M8.5 11.5h4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <div>
+          <div id="confirm-title" class="modal-title">Run shell command?</div>
+          <div class="modal-sub">The agent wants to execute this in the workspace.</div>
+        </div>
+      </div>
       <code id="confirm-cmd"></code>
-      <div class="confirm-actions">
-        <button id="confirm-allow" class="btn allow">Allow once</button>
-        <button id="confirm-deny" class="btn deny">Deny</button>
+      <div class="modal-actions">
+        <button id="confirm-deny" class="btn">Deny <span class="key-hint">Esc</span></button>
+        <button id="confirm-allow" class="btn btn-primary">Allow once</button>
       </div>
     </div>
   </div>

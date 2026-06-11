@@ -43,6 +43,7 @@ from lingcore.events import (
     Error,
     Final,
     SkillActivated,
+    StreamRetry,
     TextDelta,
     ToolCallStarted,
     ToolResultEvent,
@@ -75,6 +76,14 @@ def _event_to_msg(event: AgentEvent) -> dict[str, Any]:
             }
         case SkillActivated(name, active):
             return {"type": "skill", "name": name, "active": active}
+        case StreamRetry(attempt, max_attempts, reason, discarded_chars):
+            return {
+                "type": "stream_retry",
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+                "reason": reason,
+                "discarded_chars": discarded_chars,
+            }
         case Final(content):
             return {"type": "final", "text": content}
         case Error(message):
