@@ -63,7 +63,9 @@ _MAX_ATTACHMENTS = 4
 
 
 def _attachment_payloads(attachments: list[Attachment]) -> list[dict[str, Any]]:
-    return [a.model_dump() for a in attachments]
+    # fallback_text is a model-facing stand-in (extracted PDF text / a vision
+    # description, up to tens of KB) — the browser renders the original media.
+    return [a.model_dump(exclude={"fallback_text"}) for a in attachments]
 
 
 def _validate_attachments(raw: object) -> list[Attachment]:
