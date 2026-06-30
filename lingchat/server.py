@@ -40,6 +40,7 @@ from lingcore.config import AgentProfile
 from lingcore.errors import SessionError
 from lingcore.events import (
     AgentEvent,
+    Compacted,
     Error,
     Final,
     SkillActivated,
@@ -101,6 +102,13 @@ def _event_to_msg(event: AgentEvent) -> dict[str, Any]:
             }
         case SkillActivated(name, active):
             return {"type": "skill", "name": name, "active": active}
+        case Compacted(summarized_messages, before_tokens, after_tokens):
+            return {
+                "type": "compact",
+                "summarized_messages": summarized_messages,
+                "before_tokens": before_tokens,
+                "after_tokens": after_tokens,
+            }
         case StreamRetry(attempt, max_attempts, reason, discarded_chars):
             return {
                 "type": "stream_retry",

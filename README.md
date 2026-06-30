@@ -64,8 +64,8 @@ Connect with `ws://host/ws?session=<id>` to resume a stored session (omit for a
 fresh one; the `hello` reply carries the authoritative id).
 Client → server: `{type:"user", text}` and `{type:"confirm_response", approved}`.
 Server → client: `hello` (incl. `session`, `title`), `session_busy`, `text`,
-`tool_call`, `tool_result`, `skill`, `confirm`, `final`, `error`, `turn_end`
-(see `lingchat/server.py:_event_to_msg`).
+`tool_call`, `tool_result`, `skill`, `compact`, `stream_retry`, `confirm`,
+`final`, `error`, `turn_end` (see `lingchat/server.py:_event_to_msg`).
 
 ## Test
 

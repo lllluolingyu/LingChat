@@ -547,7 +547,24 @@
     scrollToBottom();
   }
 
-  const NOTE_ICONS = { skill: "⚙", retry: "⟲", error: "⚠", system: "" };
+  const NOTE_ICONS = { skill: "⚙", retry: "⟲", compact: "⊞", error: "⚠", system: "" };
+
+  function tokenEstimate(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? `~${Math.max(0, Math.round(n)).toLocaleString()}` : "~?";
+  }
+
+  function compactNote(msg) {
+    const count = Number(msg.summarized_messages);
+    const rounded = Number.isFinite(count) ? Math.max(0, Math.round(count)) : null;
+    const label =
+      rounded === 1
+        ? "1 earlier message"
+        : `${rounded === null ? "some" : rounded.toLocaleString()} earlier messages`;
+    const before = tokenEstimate(msg.before_tokens);
+    const after = tokenEstimate(msg.after_tokens);
+    return `Context compacted: summarized ${label} (${before} → ${after} tokens).`;
+  }
 
   function addNote(kind, text) {
     const r = row("event");
@@ -931,6 +948,11 @@
         break;
       case "skill":
         addNote("skill", `Skill ${msg.active ? "activated" : "deactivated"}: ${msg.name}`);
+        break;
+      case "compact":
+        finalizeAgentMessage();
+        addNote("compact", compactNote(msg));
+        showTyping();
         break;
       case "stream_retry":
         // The in-flight reply was lost mid-stream; whatever the current

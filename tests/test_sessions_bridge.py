@@ -206,6 +206,42 @@ def test_resume_restores_history(tmp_path):
     ]
 
 
+def test_compaction_event_is_forwarded(tmp_path):
+    profile = _write_profile(
+        tmp_path,
+        extra=(
+            "memory:\n"
+            "  max_messages: 50\n"
+            "  max_tokens: 120\n"
+            "  compaction:\n"
+            "    enabled: true\n"
+            "    compact_at_ratio: 0.1\n"
+            "    keep_recent_ratio: 0.05\n"
+            "    max_summary_chars: 1000\n"
+        ),
+    )
+    fake = FakeLLM([
+        {"text": "first answer"},
+        {"text": "compact summary"},
+        {"text": "second answer"},
+    ])
+    app = create_app(profile, llm_factory=lambda: fake)
+    client = TestClient(app)
+
+    with client.websocket_connect("/ws") as ws:
+        ws.receive_json()  # hello
+        ws.send_json({"type": "user", "text": "first " + ("padding " * 40)})
+        _drain_until(ws, "turn_end")
+
+        ws.send_json({"type": "user", "text": "second question"})
+        msgs = _drain_until(ws, "turn_end")
+
+    compact = next(m for m in msgs if m["type"] == "compact")
+    assert compact["summarized_messages"] >= 1
+    assert compact["before_tokens"] > compact["after_tokens"]
+    assert any(m["type"] == "final" and m["text"] == "second answer" for m in msgs)
+
+
 def test_unknown_valid_id_is_adopted_and_malformed_replaced(tmp_path):
     profile = _write_profile(tmp_path)
     app = create_app(profile, llm_factory=lambda: FakeLLM([{"text": "hi"}]))

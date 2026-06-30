@@ -998,6 +998,7 @@ main#messages {
 .note .note-icon { flex-shrink: 0; transform: translateY(1px); }
 .note.skill { color: var(--skill); border-color: color-mix(in srgb, var(--skill) 28%, transparent); background: color-mix(in srgb, var(--skill) 10%, var(--glass-bg)); }
 .note.retry { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 25%, transparent); background: color-mix(in srgb, var(--warn-soft) 78%, var(--glass-bg)); }
+.note.compact { color: var(--text-2); border-color: color-mix(in srgb, var(--accent) 22%, transparent); background: color-mix(in srgb, var(--accent-soft) 58%, var(--glass-bg)); }
 .note.error { color: var(--err); border-color: color-mix(in srgb, var(--err) 25%, transparent); background: color-mix(in srgb, var(--err-soft) 78%, var(--glass-bg)); }
 .note.system { justify-content: center; color: var(--muted-solid); border-style: dashed; background: var(--glass-bg-subtle); }
 
