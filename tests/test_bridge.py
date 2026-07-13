@@ -97,6 +97,7 @@ def test_shell_confirm_round_trip_approved(tmp_path):
             if m["type"] == "tool_call":
                 saw_tool_call = True
                 assert m["name"] == "run_shell"
+                assert m["id"] == "c1"
             if m["type"] == "confirm":
                 assert m["command"] == "echo hi"
                 break
@@ -107,8 +108,38 @@ def test_shell_confirm_round_trip_approved(tmp_path):
         msgs = _drain_until(ws, "turn_end")
         results = [m for m in msgs if m["type"] == "tool_result"]
         assert results and results[0]["ok"] is True
+        assert results[0]["id"] == "c1"
         assert "hi" in results[0]["content"]
         assert any(m["type"] == "final" and m["text"] == "done" for m in msgs)
+
+
+def test_tool_ids_pair_results_with_calls(tmp_path):
+    """Two calls to the *same* tool in one turn are distinguishable only by
+    call id — the substrate of the browser's tool-card pairing."""
+    profile = _write_profile(tmp_path, tools=["read_file"])
+    (tmp_path / "ws" / "notes.txt").write_text("hello notes\n", encoding="utf-8")
+    turns = [
+        {
+            "tool_calls": [
+                ToolCall(id="a1", name="read_file", arguments={"path": "notes.txt"}),
+                ToolCall(id="a2", name="read_file", arguments={"path": "missing.txt"}),
+            ]
+        },
+        {"text": "done"},
+    ]
+    app = create_app(profile, require_auth=False, llm_factory=lambda: FakeLLM(turns))
+    with TestClient(app).websocket_connect("/ws") as ws:
+        assert ws.receive_json()["type"] == "hello"
+        ws.send_json({"type": "user", "text": "read both"})
+        msgs = _drain_until(ws, "turn_end")
+
+    calls = {m["id"]: m for m in msgs if m["type"] == "tool_call"}
+    results = {m["id"]: m for m in msgs if m["type"] == "tool_result"}
+    assert set(calls) == {"a1", "a2"}
+    assert set(results) == {"a1", "a2"}
+    assert calls["a1"]["arguments"]["path"] == "notes.txt"
+    assert results["a1"]["ok"] is True
+    assert results["a2"]["ok"] is False  # missing file → failed result
 
 
 def test_shell_confirm_round_trip_denied(tmp_path):

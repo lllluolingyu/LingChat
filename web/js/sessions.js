@@ -1,0 +1,329 @@
+// Session sidebar: the stored-session list, switch/rename/delete, transcript
+// replay, the chat title, and the mobile drawer. Owns the current session id
+// — the URL hash holds it across reloads, the server's "hello" is
+// authoritative for what this socket actually attached to.
+
+import { api, reconnectNow } from "./connection.js";
+import {
+  addAgentMarkdown,
+  addNote,
+  addToolCard,
+  addUserMessage,
+  resetPendingTools,
+  resolveToolCard,
+  scrollToBottom,
+  showEmptyState,
+} from "./thread.js";
+
+const $ = (id) => document.getElementById(id);
+
+const sessionListEl = $("session-list");
+const chatTitleEl = $("chat-title");
+const menuBtn = $("menu-btn");
+const sidebarClose = $("sidebar-close");
+const backdrop = $("backdrop");
+
+let sessionId = (location.hash || "").replace(/^#/, "") || null;
+
+// Monotonic guard for async thread loads: each loadThread() invalidates every
+// older in-flight history fetch, so a slow response for session A can never
+// paint into session B's just-cleared thread.
+let threadGen = 0;
+
+export function getSessionId() {
+  return sessionId;
+}
+
+// Adopt the server-confirmed session id (from "hello") and mirror it into the
+// URL hash so a reload resumes the same conversation.
+export function adoptSession(id) {
+  sessionId = id || null;
+  if (sessionId) history.replaceState(null, "", `#${sessionId}`);
+  else history.replaceState(null, "", location.pathname);
+}
+
+export function setChatTitle(title) {
+  const t = title || "New chat";
+  chatTitleEl.textContent = t;
+  chatTitleEl.title = t;
+  document.title = title ? `${title} · LingChat` : "LingChat";
+}
+
+function relTime(iso) {
+  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+// --- listing ---------------------------------------------------------------
+
+export async function refreshSessions() {
+  let data;
+  try {
+    data = await (await api("/api/sessions")).json();
+  } catch {
+    return null;
+  }
+  if (!data.enabled) {
+    renderSessionsDisabled(data.notice);
+    return data;
+  }
+  renderSessionList(data.sessions);
+  const current = data.sessions.find((s) => s.id === sessionId);
+  if (current) setChatTitle(current.title);
+  return data;
+}
+
+// Decide between stored history and the empty state without probing a
+// fresh id (a transcript GET for a never-spoken session is a guaranteed
+// 404 — the sidebar list we need anyway already knows the answer).
+export async function loadThread() {
+  const gen = ++threadGen;
+  const data = await refreshSessions();
+  if (gen !== threadGen) return; // a newer load superseded this one
+  if (!data) {
+    // Listing failed (transient?) — fall back to probing directly.
+    if (sessionId) fetchHistory(sessionId, gen);
+    else showEmptyState();
+    return;
+  }
+  const known =
+    data.enabled && sessionId && data.sessions.some((s) => s.id === sessionId);
+  if (known) fetchHistory(sessionId, gen);
+  else showEmptyState();
+}
+
+function renderSessionsDisabled(notice) {
+  sessionListEl.textContent = "";
+  const note = document.createElement("div");
+  note.className = "sidebar-note";
+  note.textContent =
+    notice || "session history is off for this profile (sessions.enabled: false)";
+  sessionListEl.appendChild(note);
+}
+
+function dateGroup(iso) {
+  const d = new Date(iso);
+  const now = new Date();
+  const startOf = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((startOf(now) - startOf(d)) / 86400000);
+  if (days <= 0) return "Today";
+  if (days === 1) return "Yesterday";
+  if (days < 7) return "Previous 7 days";
+  if (days < 30) return "Previous 30 days";
+  return "Older";
+}
+
+function renderSessionList(sessions) {
+  sessionListEl.textContent = "";
+  if (!sessions.length) {
+    const empty = document.createElement("div");
+    empty.className = "sidebar-empty";
+    empty.textContent = "No conversations yet";
+    sessionListEl.appendChild(empty);
+    return;
+  }
+  let group = null;
+  for (const s of sessions) {
+    const g = dateGroup(s.updated_at);
+    if (g !== group) {
+      group = g;
+      const label = document.createElement("div");
+      label.className = "session-group";
+      label.textContent = g;
+      sessionListEl.appendChild(label);
+    }
+    sessionListEl.appendChild(sessionItem(s));
+  }
+}
+
+function sessionItem(s) {
+  const item = document.createElement("div");
+  item.className = "session-item" + (s.id === sessionId ? " active" : "");
+
+  const title = document.createElement("div");
+  title.className = "session-title";
+  title.textContent = s.title || "New chat";
+
+  const time = document.createElement("div");
+  time.className = "session-time";
+  time.textContent = `${relTime(s.updated_at)} · ${s.message_count} msgs`;
+
+  const actions = document.createElement("span");
+  actions.className = "session-actions";
+
+  const rename = document.createElement("button");
+  rename.className = "icon-btn";
+  rename.title = "Rename";
+  rename.innerHTML =
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.8 3.1l3.1 3.1L6 13.1l-3.6.5.5-3.6zM11.6 1.3l3.1 3.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  rename.addEventListener("click", (e) => {
+    e.stopPropagation();
+    startRename(item, title, s);
+  });
+
+  const del = document.createElement("button");
+  del.className = "icon-btn danger";
+  del.title = "Delete";
+  del.innerHTML =
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.8 4.2h10.4M6.2 4V2.8h3.6V4M4 4.2l.7 9a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9l.7-9M6.5 7v4.4M9.5 7v4.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  del.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!item.classList.contains("confirm-delete")) {
+      item.classList.add("confirm-delete");
+      title.textContent = "Delete this chat?";
+      del.title = "Click again to confirm";
+      setTimeout(() => {
+        if (item.isConnected && item.classList.contains("confirm-delete")) {
+          item.classList.remove("confirm-delete");
+          title.textContent = s.title || "New chat";
+          del.title = "Delete";
+        }
+      }, 3200);
+      return;
+    }
+    deleteSession(s.id);
+  });
+
+  actions.append(rename, del);
+  item.append(title, time, actions);
+  item.addEventListener("click", () => {
+    closeSidebar();
+    switchSession(s.id);
+  });
+  return item;
+}
+
+function startRename(item, titleEl, s) {
+  if (item.querySelector(".session-rename-input")) return;
+  const input = document.createElement("input");
+  input.className = "session-rename-input";
+  input.value = s.title || "";
+  input.placeholder = "Session name";
+  titleEl.replaceWith(input);
+  input.focus();
+  input.select();
+
+  let done = false;
+  const finish = (save) => {
+    if (done) return;
+    done = true;
+    const value = input.value.trim();
+    input.replaceWith(titleEl);
+    if (save && value && value !== s.title) renameSession(s.id, value);
+  };
+  input.addEventListener("click", (e) => e.stopPropagation());
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") finish(true);
+    else if (e.key === "Escape") finish(false);
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+async function renameSession(id, title) {
+  try {
+    await api(`/api/sessions/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+  } catch {
+    return;
+  }
+  refreshSessions();
+}
+
+// --- transcript replay -------------------------------------------------------
+
+async function fetchHistory(id, gen) {
+  let res;
+  try {
+    res = await api(`/api/sessions/${encodeURIComponent(id)}`);
+  } catch {
+    if (gen === threadGen) showEmptyState();
+    return;
+  }
+  if (gen !== threadGen) return; // the thread moved on while we waited
+  if (!res.ok) {
+    // 404: fresh id, nothing stored yet.
+    showEmptyState();
+    return;
+  }
+  let data;
+  try {
+    data = await res.json();
+  } catch {
+    return;
+  }
+  if (gen !== threadGen) return;
+  renderHistory(data.messages || []);
+  if (data.title) setChatTitle(data.title);
+}
+
+function renderHistory(messages) {
+  // Stored-message shapes (see server._stored_to_display), not the
+  // streaming event shapes main.js deals in.
+  for (const m of messages) {
+    if (m.role === "user") {
+      addUserMessage(m.text, m.attachments || [], m.name === "media");
+    } else if (m.role === "assistant") {
+      if (m.text) addAgentMarkdown(m.text);
+      for (const tc of m.tool_calls || []) {
+        addToolCard(tc.id, tc.name, tc.arguments);
+      }
+    } else if (m.role === "tool") {
+      resolveToolCard(m.id, m.name, m.ok, m.content, m.attachments || []);
+    }
+  }
+  resetPendingTools(); // anything unresolved belongs to a crashed turn; don't pair it later
+  if (!messages.length) showEmptyState();
+  scrollToBottom(true);
+}
+
+// --- switching ---------------------------------------------------------------
+
+function switchSession(id) {
+  if (id === sessionId) return;
+  sessionId = id;
+  history.replaceState(null, "", `#${id}`);
+  reconnectNow();
+}
+
+export function newChat() {
+  closeSidebar();
+  sessionId = null;
+  history.replaceState(null, "", location.pathname);
+  reconnectNow();
+}
+
+async function deleteSession(id) {
+  let res;
+  try {
+    res = await api(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+  } catch {
+    return;
+  }
+  if (res.status === 409) {
+    addNote("error", "Close this chat first — it is the open session (use New chat).");
+    return;
+  }
+  refreshSessions();
+}
+
+// --- mobile drawer -------------------------------------------------------------
+
+function openSidebar() {
+  document.body.classList.add("sidebar-open");
+  backdrop.hidden = false;
+}
+
+function closeSidebar() {
+  document.body.classList.remove("sidebar-open");
+  backdrop.hidden = true;
+}
+
+menuBtn.addEventListener("click", openSidebar);
+sidebarClose.addEventListener("click", closeSidebar);
+backdrop.addEventListener("click", closeSidebar);

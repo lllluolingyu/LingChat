@@ -169,8 +169,9 @@ def test_transcript_display_shapes(tmp_path):
     assert roles == ["user", "assistant", "tool", "assistant"]
     assert data["messages"][0]["text"] == "read that file"
     assert data["messages"][1]["tool_calls"] == [
-        {"name": "read_file", "arguments": {"path": "missing.txt"}}
+        {"id": "c1", "name": "read_file", "arguments": {"path": "missing.txt"}}
     ]
+    assert data["messages"][2]["id"] == "c1"  # pairs the result with its call
     assert data["messages"][2]["ok"] is False  # ERROR: prefix → failed result
     assert data["messages"][3]["text"] == "could not read it"
 

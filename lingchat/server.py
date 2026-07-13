@@ -111,10 +111,18 @@ def _event_to_msg(event: AgentEvent) -> dict[str, Any]:
         case TextDelta(text):
             return {"type": "text", "text": text}
         case ToolCallStarted(call):
-            return {"type": "tool_call", "name": call.name, "arguments": call.arguments}
+            # call.id / call_id let the browser pair a result with its exact
+            # card — pairing by name misroutes parallel calls to the same tool.
+            return {
+                "type": "tool_call",
+                "id": call.id,
+                "name": call.name,
+                "arguments": call.arguments,
+            }
         case ToolResultEvent(result):
             return {
                 "type": "tool_result",
+                "id": result.call_id,
                 "name": result.name,
                 "ok": result.ok,
                 "content": result.content,
@@ -163,11 +171,13 @@ def _stored_to_display(m: Message) -> dict[str, Any]:
             "role": "assistant",
             "text": m.content,
             "tool_calls": [
-                {"name": tc.name, "arguments": tc.arguments} for tc in m.tool_calls
+                {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                for tc in m.tool_calls
             ],
         }
     return {
         "role": "tool",
+        "id": m.tool_call_id,
         "name": m.name,
         "ok": not m.content.startswith("ERROR: "),
         "content": m.content,
