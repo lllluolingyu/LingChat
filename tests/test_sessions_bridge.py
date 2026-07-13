@@ -77,7 +77,7 @@ def _delete_when_released(client: TestClient, sid: str):
 
 def test_turn_is_stored_and_listed(tmp_path):
     profile = _write_profile(tmp_path)
-    app = create_app(profile, llm_factory=lambda: FakeLLM([{"text": "Hello!"}]))
+    app = create_app(profile, require_auth=False, llm_factory=lambda: FakeLLM([{"text": "Hello!"}]))
     client = TestClient(app)
 
     with client.websocket_connect("/ws") as ws:
@@ -99,7 +99,7 @@ def test_turn_is_stored_and_listed(tmp_path):
 def test_websocket_attachment_reaches_agent(tmp_path):
     profile = _write_profile(tmp_path)
     fake = FakeLLM([{"text": "seen"}])
-    app = create_app(profile, llm_factory=lambda: fake)
+    app = create_app(profile, require_auth=False, llm_factory=lambda: fake)
     client = TestClient(app)
     payload = {
         "kind": "image",
@@ -128,7 +128,7 @@ def test_websocket_over_total_attachment_limit_is_per_turn_error(tmp_path, monke
     monkeypatch.setattr(message_mod, "TOTAL_ATTACHMENT_MAX_BYTES", 32)
     profile = _write_profile(tmp_path)
     fake = FakeLLM([{"text": "still alive"}])
-    app = create_app(profile, llm_factory=lambda: fake)
+    app = create_app(profile, require_auth=False, llm_factory=lambda: fake)
     client = TestClient(app)
     payload = {
         "kind": "image",
@@ -156,7 +156,7 @@ def test_transcript_display_shapes(tmp_path):
         {"tool_calls": [ToolCall(id="c1", name="read_file", arguments={"path": "missing.txt"})]},
         {"text": "could not read it"},
     ]
-    app = create_app(profile, llm_factory=lambda: FakeLLM(turns))
+    app = create_app(profile, require_auth=False, llm_factory=lambda: FakeLLM(turns))
     client = TestClient(app)
 
     with client.websocket_connect("/ws") as ws:
@@ -180,7 +180,7 @@ def test_resume_restores_history(tmp_path):
     fake1 = FakeLLM([{"text": "first answer"}])
     fake2 = FakeLLM([{"text": "second answer"}])
     fakes = [fake1, fake2]
-    app = create_app(profile, llm_factory=lambda: fakes.pop(0))
+    app = create_app(profile, require_auth=False, llm_factory=lambda: fakes.pop(0))
     client = TestClient(app)
 
     with client.websocket_connect("/ws") as ws:
@@ -225,7 +225,7 @@ def test_compaction_event_is_forwarded(tmp_path):
         {"text": "compact summary"},
         {"text": "second answer"},
     ])
-    app = create_app(profile, llm_factory=lambda: fake)
+    app = create_app(profile, require_auth=False, llm_factory=lambda: fake)
     client = TestClient(app)
 
     with client.websocket_connect("/ws") as ws:
@@ -244,7 +244,7 @@ def test_compaction_event_is_forwarded(tmp_path):
 
 def test_unknown_valid_id_is_adopted_and_malformed_replaced(tmp_path):
     profile = _write_profile(tmp_path)
-    app = create_app(profile, llm_factory=lambda: FakeLLM([{"text": "hi"}]))
+    app = create_app(profile, require_auth=False, llm_factory=lambda: FakeLLM([{"text": "hi"}]))
     client = TestClient(app)
 
     minted = "ab" * 16
@@ -261,7 +261,7 @@ def test_unknown_valid_id_is_adopted_and_malformed_replaced(tmp_path):
 
 def test_concurrent_attach_refused(tmp_path):
     profile = _write_profile(tmp_path)
-    app = create_app(profile, llm_factory=lambda: FakeLLM([]))
+    app = create_app(profile, require_auth=False, llm_factory=lambda: FakeLLM([]))
     client = TestClient(app)
 
     with client.websocket_connect("/ws") as ws1:
@@ -273,7 +273,7 @@ def test_concurrent_attach_refused(tmp_path):
 
 def test_delete_and_rename(tmp_path):
     profile = _write_profile(tmp_path)
-    app = create_app(profile, llm_factory=lambda: FakeLLM([{"text": "yo"}]))
+    app = create_app(profile, require_auth=False, llm_factory=lambda: FakeLLM([{"text": "yo"}]))
     client = TestClient(app)
 
     with client.websocket_connect("/ws") as ws:
@@ -296,7 +296,7 @@ def test_delete_and_rename(tmp_path):
 
 def test_sessions_disabled_profile(tmp_path):
     profile = _write_profile(tmp_path, extra="sessions:\n  enabled: false\n")
-    app = create_app(profile, llm_factory=lambda: FakeLLM([{"text": "ephemeral"}]))
+    app = create_app(profile, require_auth=False, llm_factory=lambda: FakeLLM([{"text": "ephemeral"}]))
     client = TestClient(app)
 
     listing = client.get("/api/sessions").json()
@@ -318,7 +318,7 @@ def test_sessions_in_package_profile_serves_notice(tmp_path, monkeypatch):
 
     monkeypatch.setattr(sessions_mod, "_PACKAGE_DIR", tmp_path.resolve())
     profile = _write_profile(tmp_path)
-    app = create_app(profile, llm_factory=lambda: FakeLLM([]))
+    app = create_app(profile, require_auth=False, llm_factory=lambda: FakeLLM([]))
     client = TestClient(app)
 
     listing = client.get("/api/sessions").json()

@@ -20,13 +20,18 @@ LingChat/
 ```bash
 cd LingChat
 uv sync                                   # installs fastapi/uvicorn + editable lingcore
-uv run lingchat                           # serves the repo's coding profile by default
-# then open http://127.0.0.1:8000
+uv run lingchat -p ../profiles/daily      # serve a profile (choose it explicitly)
+# then open the printed http://127.0.0.1:8000/?token=... URL
 ```
 
-Flags: `-p/--profile <path>`, `-w/--workspace <dir>`, `--host`, `--port`.
+`-p/--profile` is **required**: the profile decides what the served agent can
+do — serving `../profiles/coding` means serving an agent with shell access, so
+that is an explicit choice rather than a default. Other flags:
+`-w/--workspace <dir>`, `--host`, `--port`, `--allow-remote`.
 Without `-w` the agent works in the profile's own `workspace/` directory
 (auto-created) — pass `-w /path/to/project` to point it at real files.
+IPv6 literals are passed raw to `--host` (for example `::1`); the printed
+browser URL adds the required brackets automatically.
 
 ## Sessions
 
@@ -53,16 +58,27 @@ persistence is off), `GET /api/sessions/{id}` (transcript),
 
 ## ⚠️ Security
 
-The agent can run shell commands, so **the server is bound to `127.0.0.1` by
-default**. Exposing the port to a network is remote code execution. If you must,
-pair it with a profile whose shell is sandboxed — and even then, treat it as
-trusted-local only.
+The agent may run shell commands, so **the server binds to `127.0.0.1` and
+refuses any other host unless `--allow-remote` is given**. Exposing the port to
+a network is remote code execution for a shell-enabled profile. If you must,
+put TLS and network controls in front, prefer a profile without `run_shell`,
+and even then treat it as trusted-local only.
+
+Every protected `/api` request and WebSocket handshake is authenticated with
+the per-launch token printed at startup (`?token=...` on the initial URL and
+WebSocket, `X-LingChat-Token` on REST calls). The page stores the token in
+`sessionStorage` and immediately scrubs it from the address bar, so reloads keep
+working without the token lingering in history. WebSocket handshakes from a
+browser must also match the server's full origin (scheme and authority).
 
 ## Protocol
 
-Connect with `ws://host/ws?session=<id>` to resume a stored session (omit for a
-fresh one; the `hello` reply carries the authoritative id).
-Client → server: `{type:"user", text}` and `{type:"confirm_response", approved}`.
+Connect with `ws://host/ws?token=<launch-token>&session=<id>` to resume a stored
+session (omit `session` for a fresh one; the `hello` reply carries the
+authoritative id). REST calls send the same token in `X-LingChat-Token`.
+Client → server: `{type:"user", text}` and
+`{type:"confirm_response", id, approved}`; the `id` echoes the corresponding
+server `confirm` message so parallel confirmations cannot be crossed.
 Server → client: `hello` (incl. `session`, `title`), `session_busy`, `text`,
 `tool_call`, `tool_result`, `skill`, `compact`, `stream_retry`, `confirm`,
 `final`, `error`, `turn_end` (see `lingchat/server.py:_event_to_msg`).
@@ -72,3 +88,5 @@ Server → client: `hello` (incl. `session`, `title`), `session_busy`, `text`,
 ```bash
 cd LingChat && uv run pytest -q
 ```
+
+The current suite contains 24 tests.

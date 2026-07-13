@@ -1,11 +1,12 @@
 [project]
 name = "lingchat"
-version = "0.0.1"
+version = "0.1.0"
 description = "Web UI front-end for LingCore agents"
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.11"
 dependencies = [
-    "lingcore",
+    "lingcore>=0.1.0,<0.2.0",
     "fastapi==0.115.6",
     "uvicorn[standard]==0.34.0",
 ]
@@ -19,6 +20,12 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["lingchat"]
+
+# The browser UI must ship inside the wheel (as lingchat/web/) or an installed
+# LingChat cannot serve its own front-end; in a repo checkout the same files
+# live at ./web (server.py checks both locations).
+[tool.hatch.build.targets.wheel.force-include]
+"web" = "lingchat/web"
 
 # LingChat consumes the sibling lingcore package as an editable path dependency.
 [tool.uv.sources]

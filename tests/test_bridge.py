@@ -66,7 +66,7 @@ def _drain_until(ws, stop_type: str) -> list[dict]:
 
 def test_hello_then_streamed_text_and_final(tmp_path):
     profile = _write_profile(tmp_path, tools=[])
-    app = create_app(profile, llm_factory=lambda: FakeLLM([{"text": "Hello there!"}]))
+    app = create_app(profile, require_auth=False, llm_factory=lambda: FakeLLM([{"text": "Hello there!"}]))
     with TestClient(app).websocket_connect("/ws") as ws:
         hello = ws.receive_json()
         assert hello["type"] == "hello"
@@ -85,7 +85,7 @@ def test_shell_confirm_round_trip_approved(tmp_path):
         {"tool_calls": [ToolCall(id="c1", name="run_shell", arguments={"command": "echo hi"})]},
         {"text": "done"},
     ]
-    app = create_app(profile, llm_factory=lambda: FakeLLM(turns))
+    app = create_app(profile, require_auth=False, llm_factory=lambda: FakeLLM(turns))
     with TestClient(app).websocket_connect("/ws") as ws:
         assert ws.receive_json()["type"] == "hello"
         ws.send_json({"type": "user", "text": "run echo"})
@@ -117,7 +117,7 @@ def test_shell_confirm_round_trip_denied(tmp_path):
         {"tool_calls": [ToolCall(id="c1", name="run_shell", arguments={"command": "rm -rf /"})]},
         {"text": "ok, skipped"},
     ]
-    app = create_app(profile, llm_factory=lambda: FakeLLM(turns))
+    app = create_app(profile, require_auth=False, llm_factory=lambda: FakeLLM(turns))
     with TestClient(app).websocket_connect("/ws") as ws:
         assert ws.receive_json()["type"] == "hello"
         ws.send_json({"type": "user", "text": "danger"})

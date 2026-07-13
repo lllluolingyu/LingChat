@@ -60,6 +60,35 @@
   let streaming = null; // {body, raw, rafId, actions} for the assistant reply in flight
   let reconnectTimer = null;
   let sessionId = (location.hash || "").replace(/^#/, "") || null;
+  // Per-launch auth token: taken from the page URL (?token=...) the server
+  // prints at startup, and sent on every WebSocket handshake and REST call.
+  // Persisted to sessionStorage so this tab survives reloads after the token
+  // is scrubbed from the URL — and scrubbed eagerly (only once safely stored)
+  // so the address bar / history / screenshots don't carry it around.
+  const AUTH_TOKEN = (() => {
+    const fromUrl = new URLSearchParams(location.search).get("token") || "";
+    if (fromUrl) {
+      try {
+        sessionStorage.setItem("lingchat-token", fromUrl);
+        history.replaceState(null, "", location.pathname + (location.hash || ""));
+      } catch {
+        /* storage unavailable (e.g. blocked): keep the token in the URL */
+      }
+      return fromUrl;
+    }
+    try {
+      return sessionStorage.getItem("lingchat-token") || "";
+    } catch {
+      return "";
+    }
+  })();
+
+  // fetch() wrapper that attaches the auth token header to every API call.
+  function api(path, opts = {}) {
+    const headers = Object.assign({}, opts.headers || {});
+    if (AUTH_TOKEN) headers["X-LingChat-Token"] = AUTH_TOKEN;
+    return fetch(path, Object.assign({}, opts, { headers }));
+  }
   let switching = false; // intentional reconnect to another session
   let suppressReconnect = false; // session open in another tab
   let pendingTools = []; // [{name, card}] tool calls awaiting their result
@@ -653,7 +682,7 @@
   async function refreshSessions() {
     let data;
     try {
-      data = await (await fetch("/api/sessions")).json();
+      data = await (await api("/api/sessions")).json();
     } catch {
       return null;
     }
@@ -813,7 +842,7 @@
 
   async function renameSession(id, title) {
     try {
-      await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
+      await api(`/api/sessions/${encodeURIComponent(id)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title }),
@@ -827,7 +856,7 @@
   async function fetchHistory(id) {
     let res;
     try {
-      res = await fetch(`/api/sessions/${encodeURIComponent(id)}`);
+      res = await api(`/api/sessions/${encodeURIComponent(id)}`);
     } catch {
       showEmptyState();
       return;
@@ -896,7 +925,7 @@
   async function deleteSession(id) {
     let res;
     try {
-      res = await fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+      res = await api(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
     } catch {
       return;
     }
@@ -964,7 +993,7 @@
         break;
       case "confirm":
         hideTyping();
-        showConfirm(msg.command);
+        showConfirm(msg.command, msg.id);
         break;
       case "final":
         // Streamed text already rendered; ensure a bubble exists if Final
@@ -992,18 +1021,38 @@
 
   // --- confirm modal ----------------------------------------------------------
 
-  function showConfirm(command) {
-    confirmCmd.textContent = command;
+  // Confirmations are queued: parallel tool calls can request several at once,
+  // each with its own id, and we resolve them one modal at a time by id so an
+  // approval is never misrouted to the wrong command.
+  let confirmQueue = []; // [{command, id}]
+
+  function showConfirm(command, id) {
+    confirmQueue.push({ command, id });
+    if (confirmQueue.length === 1) renderConfirm();
+  }
+
+  function renderConfirm() {
+    const item = confirmQueue[0];
+    if (!item) {
+      confirmEl.classList.add("hidden");
+      return;
+    }
+    confirmCmd.textContent = item.command;
     confirmEl.classList.remove("hidden");
     confirmDeny.focus(); // safe default for a stray Enter
   }
 
   function answerConfirm(approved) {
-    confirmEl.classList.add("hidden");
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "confirm_response", approved }));
+    const item = confirmQueue.shift();
+    if (item && ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "confirm_response", id: item.id, approved }));
     }
-    focusInput();
+    if (confirmQueue.length) {
+      renderConfirm();
+    } else {
+      confirmEl.classList.add("hidden");
+      focusInput();
+    }
   }
 
   confirmAllow.addEventListener("click", () => answerConfirm(true));
@@ -1018,7 +1067,10 @@
 
   function connect() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    const query = sessionId ? `?session=${encodeURIComponent(sessionId)}` : "";
+    const params = new URLSearchParams();
+    if (sessionId) params.set("session", sessionId);
+    if (AUTH_TOKEN) params.set("token", AUTH_TOKEN);
+    const query = params.toString() ? `?${params.toString()}` : "";
     const sock = new WebSocket(`${proto}://${location.host}/ws${query}`);
     ws = sock;
     // Handlers ignore stale sockets: an abandoned CONNECTING socket may close

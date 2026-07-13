@@ -26,11 +26,22 @@ under ``/api/sessions`` serve the sidebar: list, transcript, rename, delete.
 from __future__ import annotations
 
 import asyncio
+import secrets
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -53,7 +64,16 @@ from lingcore.message import Attachment, Message, UserInput
 from lingcore.media import attachment_from_wire
 from lingcore.sessions import SessionStore, is_session_id, new_session_id, open_store
 
-_WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+def _find_web_dir() -> Path:
+    """Locate the static UI: ``lingchat/web`` in an installed wheel (the build
+    force-includes it there), ``../web`` in a repo checkout."""
+    pkg_local = Path(__file__).resolve().parent / "web"
+    if pkg_local.is_dir():
+        return pkg_local
+    return Path(__file__).resolve().parent.parent / "web"
+
+
+_WEB_DIR = _find_web_dir()
 
 # An optional zero-arg factory returning an LLMClient-shaped object. When given,
 # each session uses it instead of building a real client — the seam tests use to
@@ -186,19 +206,60 @@ class WebSession:
             session_id=session_id,
         )
         self.profile = profile
-        self._pending_confirm: asyncio.Future[bool] | None = None
+        # One future per in-flight confirmation, keyed by a generated id, so two
+        # simultaneous tool calls (parallel_tools) each get their own round-trip
+        # and an approval is never misrouted to the wrong command.
+        self._pending_confirms: dict[str, asyncio.Future[bool]] = {}
         self._run_lock = asyncio.Lock()
+        # In-flight turn tasks, tracked so a disconnect can cancel and await them
+        # before the session lease is released (no orphaned agent on the store).
+        self._tasks: set[asyncio.Task[None]] = set()
 
     async def confirm(self, command: str) -> bool:
-        """Ask the browser to approve a command; await its click."""
+        """Ask the browser to approve a command; await its click.
+
+        Each call gets a unique id echoed back in the ``confirm_response`` so
+        concurrent confirmations don't clobber one another's future.
+        """
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[bool] = loop.create_future()
-        self._pending_confirm = fut
-        await self.ws.send_json({"type": "confirm", "command": command})
+        cid = uuid.uuid4().hex
+        self._pending_confirms[cid] = fut
+        await self.ws.send_json({"type": "confirm", "id": cid, "command": command})
         try:
             return await fut
         finally:
-            self._pending_confirm = None
+            self._pending_confirms.pop(cid, None)
+
+    def _resolve_confirm(self, cid: str | None, approved: bool) -> None:
+        """Resolve a pending confirmation by id (or the sole one if no id)."""
+        if cid is None:
+            # Back-compat / single-prompt case: resolve the only pending confirm.
+            if len(self._pending_confirms) == 1:
+                cid = next(iter(self._pending_confirms))
+            else:
+                return
+        fut = self._pending_confirms.get(cid)
+        if fut is not None and not fut.done():
+            fut.set_result(approved)
+
+    def spawn_turn(self, incoming: UserInput) -> None:
+        """Launch a turn as a tracked task (so disconnect can cancel it)."""
+        task = asyncio.create_task(self._run_turn(incoming))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def aclose(self) -> None:
+        """Tear down on disconnect: cancel in-flight turns and await them.
+
+        A long-running tool (e.g. run_shell) is cancelled so it stops touching
+        the shared session before the lease is released — otherwise a second tab
+        could attach and a second agent interleave writes on the same transcript.
+        """
+        for task in list(self._tasks):
+            task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
 
     async def _run_turn(self, incoming: UserInput) -> None:
         # Serialize turns so one connection's runs share memory safely.
@@ -206,11 +267,18 @@ class WebSession:
             try:
                 async for event in self.agent.run(incoming):
                     await self.ws.send_json(_event_to_msg(event))
-            except WebSocketDisconnect:
+            except (WebSocketDisconnect, asyncio.CancelledError):
                 raise
             except Exception as e:  # never let one turn kill the connection
-                await self.ws.send_json({"type": "error", "message": f"internal error: {e!r}"})
-            await self.ws.send_json({"type": "turn_end"})
+                await self._safe_send({"type": "error", "message": f"internal error: {e!r}"})
+            await self._safe_send({"type": "turn_end"})
+
+    async def _safe_send(self, msg: dict[str, Any]) -> None:
+        """Send, tolerating a socket that closed underneath us."""
+        try:
+            await self.ws.send_json(msg)
+        except Exception:
+            pass
 
     async def serve(self) -> None:
         """Reader loop: dispatch inbound messages until the socket closes."""
@@ -248,18 +316,21 @@ class WebSession:
                     await self.ws.send_json({"type": "error", "message": f"attachment error: {e}"})
                     continue
                 if incoming is not None:
-                    # Launch concurrently so confirm replies can still be read.
-                    asyncio.create_task(self._run_turn(incoming))
+                    # Launch as a tracked task so confirm replies can still be
+                    # read concurrently and a disconnect can cancel it cleanly.
+                    self.spawn_turn(incoming)
             elif kind == "confirm_response":
-                fut = self._pending_confirm
-                if fut is not None and not fut.done():
-                    fut.set_result(bool(msg.get("approved")))
+                self._resolve_confirm(msg.get("id"), bool(msg.get("approved")))
 
 
 def create_app(
     profile_path: str | Path,
     workspace: str | None = None,
     llm_factory: LLMFactory | None = None,
+    *,
+    require_auth: bool = True,
+    auth_token: str | None = None,
+    allowed_origins: list[str] | None = None,
 ) -> FastAPI:
     """Build the FastAPI app for a given profile.
 
@@ -268,11 +339,50 @@ def create_app(
     session — resumed when the client names one, fresh otherwise.
     ``llm_factory`` overrides the LLM client per connection (tests inject a
     scripted fake; default builds a real client from the profile).
+
+    Authentication boundary (the agent can run shell — treat the port as
+    remote code execution): when ``require_auth`` is true (the default) every
+    ``/ws`` and ``/api`` request must present a high-entropy per-launch token
+    (``auth_token`` or an auto-generated one, exposed as ``app.state.auth_token``
+    and printed by the CLI) via the ``token`` query param or ``X-LingChat-Token``
+    header, and a WebSocket carrying an ``Origin`` header must match the server's
+    own origin (blocking cross-site WebSocket hijacking from a malicious page).
+    Tests pass ``require_auth=False`` to exercise the bridge without the gate.
     """
     profile = AgentProfile.load(profile_path)
     if workspace:
         profile.workspace = workspace
     base_dir = Path.cwd()
+
+    token: str | None = None
+    if require_auth:
+        token = auth_token or secrets.token_urlsafe(32)
+
+    def _token_ok(provided: str | None) -> bool:
+        if not require_auth:
+            return True
+        return bool(provided) and secrets.compare_digest(provided or "", token or "")
+
+    def _origin_ok(origin: str | None, host_header: str | None, scheme: str) -> bool:
+        """Accept a WebSocket handshake's Origin.
+
+        No Origin (a non-browser client) is allowed — the token still gates it.
+        A browser always sends Origin; it must match the server's own origin —
+        scheme AND authority (or an explicit ``allowed_origins`` entry) — so a
+        page on another origin cannot open the socket even from loopback.
+        Comparing the netloc alone is not enough: ``https://host`` and
+        ``http://host`` are different origins, and a cross-scheme page must be
+        refused like any other foreign one. ``scheme`` is the page scheme the
+        connection implies ("https" for a wss/https request, else "http").
+        """
+        if origin is None:
+            return True
+        if allowed_origins is not None:
+            return origin in allowed_origins
+        if not host_header:
+            return False
+        parsed = urlsplit(origin)
+        return parsed.scheme == scheme and parsed.netloc == host_header
 
     store, notice = open_store(profile)
     if notice:
@@ -290,9 +400,26 @@ def create_app(
                 store.close()
 
     app = FastAPI(title="LingChat", lifespan=lifespan)
+    app.state.auth_token = token
+
+    async def _require_token(
+        x_lingchat_token: str | None = Header(default=None),
+        token_q: str | None = Query(default=None, alias="token"),
+    ) -> None:
+        if not _token_ok(x_lingchat_token or token_q):
+            raise HTTPException(status_code=401, detail="invalid or missing token")
 
     @app.websocket("/ws")
-    async def ws_endpoint(ws: WebSocket, session: str | None = None) -> None:  # pragma: no cover - exercised via TestClient
+    async def ws_endpoint(ws: WebSocket, session: str | None = None, token: str | None = None) -> None:  # pragma: no cover - exercised via TestClient
+        # Authenticate BEFORE accepting: reject a bad origin or missing token at
+        # the handshake so an unauthorized page never opens the socket.
+        page_scheme = "https" if ws.url.scheme in ("wss", "https") else "http"
+        if not _origin_ok(ws.headers.get("origin"), ws.headers.get("host"), page_scheme):
+            await ws.close(code=4403)
+            return
+        if not _token_ok(token or ws.headers.get("x-lingchat-token")):
+            await ws.close(code=4401)
+            return
         await ws.accept()
         sid: str | None = None
         if store is not None:
@@ -304,6 +431,7 @@ def create_app(
                 await ws.close(code=4409)
                 return
             attached.add(sid)
+        web_session: WebSession | None = None
         try:
             web_session = WebSession(
                 ws, profile, base_dir,
@@ -313,11 +441,15 @@ def create_app(
         except WebSocketDisconnect:
             pass
         finally:
+            # Cancel and await in-flight turns BEFORE releasing the lease, so no
+            # detached agent keeps writing to a session a new tab could adopt.
+            if web_session is not None:
+                await web_session.aclose()
             if sid is not None:
                 attached.discard(sid)
 
     @app.get("/api/sessions")
-    async def list_sessions() -> dict[str, Any]:
+    async def list_sessions(_: None = Depends(_require_token)) -> dict[str, Any]:
         if store is None:
             # notice tells the sidebar *why* history is off (None when the
             # profile opted out via sessions.enabled: false).
@@ -329,7 +461,7 @@ def create_app(
         }
 
     @app.get("/api/sessions/{session_id}")
-    async def get_session(session_id: str) -> dict[str, Any]:
+    async def get_session(session_id: str, _: None = Depends(_require_token)) -> dict[str, Any]:
         meta = store.get(session_id) if store is not None else None
         if meta is None:
             raise HTTPException(status_code=404, detail="unknown session")
@@ -337,7 +469,7 @@ def create_app(
         return {**meta.model_dump(mode="json"), "messages": display}
 
     @app.delete("/api/sessions/{session_id}")
-    async def delete_session(session_id: str) -> dict[str, Any]:
+    async def delete_session(session_id: str, _: None = Depends(_require_token)) -> dict[str, Any]:
         if store is None:
             raise HTTPException(status_code=404, detail="unknown session")
         if session_id in attached:
@@ -349,7 +481,7 @@ def create_app(
         return {"ok": True}
 
     @app.patch("/api/sessions/{session_id}")
-    async def rename_session(session_id: str, body: _RenameBody) -> dict[str, Any]:
+    async def rename_session(session_id: str, body: _RenameBody, _: None = Depends(_require_token)) -> dict[str, Any]:
         title = body.title.strip()
         if store is None or not title:
             raise HTTPException(

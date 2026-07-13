@@ -356,7 +356,7 @@ wheels = [
 
 [[package]]
 name = "lingchat"
-version = "0.0.1"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
@@ -385,7 +385,6 @@ dev = [
 
 [[package]]
 name = "lingcore"
-version = "0.0.1"
 source = { editable = "../" }
 dependencies = [
     { name = "httpx" },
