@@ -9,6 +9,8 @@ import {
   addNote,
   addToolCard,
   addUserMessage,
+  clearThread,
+  compactNote,
   resetPendingTools,
   resolveToolCard,
   scrollToBottom,
@@ -24,6 +26,7 @@ const sidebarClose = $("sidebar-close");
 const backdrop = $("backdrop");
 
 let sessionId = (location.hash || "").replace(/^#/, "") || null;
+let pendingForkEdit = null; // {session, seq, text}; consumed after fork reconnect
 
 // Monotonic guard for async thread loads: each loadThread() invalidates every
 // older in-flight history fetch, so a slow response for session A can never
@@ -32,6 +35,13 @@ let threadGen = 0;
 
 export function getSessionId() {
   return sessionId;
+}
+
+export function takePendingForkEdit(id) {
+  if (!pendingForkEdit || pendingForkEdit.session !== id) return null;
+  const pending = pendingForkEdit;
+  pendingForkEdit = null;
+  return pending;
 }
 
 // Adopt the server-confirmed session id (from "hello") and mirror it into the
@@ -85,13 +95,13 @@ export async function loadThread() {
   if (gen !== threadGen) return; // a newer load superseded this one
   if (!data) {
     // Listing failed (transient?) — fall back to probing directly.
-    if (sessionId) fetchHistory(sessionId, gen);
+    if (sessionId) await fetchHistory(sessionId, gen);
     else showEmptyState();
     return;
   }
   const known =
     data.enabled && sessionId && data.sessions.some((s) => s.id === sessionId);
-  if (known) fetchHistory(sessionId, gen);
+  if (known) await fetchHistory(sessionId, gen);
   else showEmptyState();
 }
 
@@ -258,24 +268,56 @@ async function fetchHistory(id, gen) {
     return;
   }
   if (gen !== threadGen) return;
-  renderHistory(data.messages || []);
+  renderHistory(data.messages || [], data.events || []);
   if (data.title) setChatTitle(data.title);
 }
 
-function renderHistory(messages) {
+function renderReplayEvent(event) {
+  if (event.type === "compact") {
+    addNote("compact", compactNote(event));
+    return;
+  }
+  if (event.type === "skill_state") {
+    for (const name of event.activated || []) {
+      addNote("skill", `Skill activated: ${name}`);
+    }
+    for (const name of event.deactivated || []) {
+      addNote("skill", `Skill deactivated: ${name}`);
+    }
+  }
+}
+
+function renderHistory(messages, events = []) {
   // Stored-message shapes (see server._stored_to_display), not the
-  // streaming event shapes main.js deals in.
+  // streaming event shapes main.js deals in. Durable runtime events are
+  // anchored after a stable message seq, so replay recreates their original
+  // position even after a restart or Edit branch.
+  clearThread();
+  const byMessage = new Map();
+  const orderedEvents = [...events].sort(
+    (left, right) => (left.event_seq ?? -1) - (right.event_seq ?? -1),
+  );
+  for (const event of orderedEvents) {
+    if (!Number.isInteger(event.message_seq)) continue;
+    const anchored = byMessage.get(event.message_seq) || [];
+    anchored.push(event);
+    byMessage.set(event.message_seq, anchored);
+  }
   for (const m of messages) {
     if (m.role === "user") {
-      addUserMessage(m.text, m.attachments || [], m.name === "media");
+      addUserMessage(m.text, m.attachments || [], m.name === "media", m.seq);
     } else if (m.role === "assistant") {
-      if (m.text) addAgentMarkdown(m.text);
+      if (m.text) {
+        const forkSeq = (m.tool_calls || []).length ? null : m.seq;
+        addAgentMarkdown(m.text, forkSeq);
+      }
       for (const tc of m.tool_calls || []) {
         addToolCard(tc.id, tc.name, tc.arguments);
       }
     } else if (m.role === "tool") {
       resolveToolCard(m.id, m.name, m.ok, m.content, m.attachments || []);
     }
+    for (const event of byMessage.get(m.seq) || []) renderReplayEvent(event);
   }
   resetPendingTools(); // anything unresolved belongs to a crashed turn; don't pair it later
   if (!messages.length) showEmptyState();
@@ -284,15 +326,67 @@ function renderHistory(messages) {
 
 // --- switching ---------------------------------------------------------------
 
-function switchSession(id) {
+function switchSession(id, forkEdit = null) {
   if (id === sessionId) return;
+  pendingForkEdit = forkEdit;
   sessionId = id;
   history.replaceState(null, "", `#${id}`);
   reconnectNow();
 }
 
+export async function forkCurrentSession(throughSeq, regenerateText = undefined) {
+  const source = sessionId;
+  if (!source || !Number.isInteger(throughSeq) || throughSeq < 0) return false;
+  let response;
+  try {
+    response = await api(`/api/sessions/${encodeURIComponent(source)}/fork`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ through_seq: throughSeq }),
+    });
+  } catch {
+    addNote("error", "Could not fork this conversation.");
+    return false;
+  }
+  if (!response.ok) {
+    let message = "Could not fork this conversation.";
+    try {
+      const data = await response.json();
+      if (data.detail) message = data.detail;
+    } catch {
+      /* use the stable fallback */
+    }
+    addNote("error", message);
+    return false;
+  }
+  let forked;
+  try {
+    forked = await response.json();
+  } catch {
+    addNote("error", "The fork response was not valid JSON.");
+    return false;
+  }
+  if (!forked.id) {
+    addNote("error", "The fork response did not include a session id.");
+    return false;
+  }
+  // If the user navigated elsewhere while the request was in flight, keep the
+  // successfully-created fork in the sidebar but do not steal their new view.
+  if (sessionId !== source) {
+    refreshSessions();
+    return true;
+  }
+  const forkEdit =
+    regenerateText === undefined
+      ? null
+      : { session: forked.id, seq: throughSeq, text: regenerateText };
+  switchSession(forked.id, forkEdit);
+  return true;
+}
+
 export function newChat() {
   closeSidebar();
+  pendingForkEdit = null;
   sessionId = null;
   history.replaceState(null, "", location.pathname);
   reconnectNow();

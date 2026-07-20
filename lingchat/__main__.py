@@ -15,6 +15,7 @@ import sys
 import uvicorn
 
 from lingchat.server import create_app
+from lingcore.errors import LingCoreError
 
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
@@ -67,7 +68,11 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    app = create_app(args.profile, workspace=args.workspace)
+    try:
+        app = create_app(args.profile, workspace=args.workspace)
+    except LingCoreError as exc:
+        print(f"error: failed to start LingChat: {exc}", file=sys.stderr)
+        return 2
     token = app.state.auth_token
     if args.host not in _LOOPBACK_HOSTS:
         print(

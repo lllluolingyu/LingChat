@@ -21,10 +21,20 @@ let typingEl = null;
 let stick = true; // keep the view glued to the newest message
 let agentName = "the agent";
 let modelName = "";
+let editHandler = null; // (seq, editedText) => boolean, injected by main.js
+let forkHandler = null; // async (seq, regenerateText?) => boolean, injected by main.js
 
 export function setAgentIdentity(name, model) {
   agentName = name || "the agent";
   modelName = model || "";
+}
+
+export function setEditHandler(handler) {
+  editHandler = handler;
+}
+
+export function setForkHandler(handler) {
+  forkHandler = handler;
 }
 
 // --- scrolling ---------------------------------------------------------------
@@ -128,15 +138,117 @@ function renderAttachments(container, attachments = []) {
   container.appendChild(grid);
 }
 
-export function addUserMessage(text, attachments = [], synthetic = false) {
+function renderUserBubble(bubble, text, attachments) {
+  bubble.textContent = "";
+  bubble.appendChild(document.createTextNode(text || "Attached media"));
+  renderAttachments(bubble, attachments);
+}
+
+function forkButton(seq, regenerateText = undefined) {
+  const fork = document.createElement("button");
+  fork.type = "button";
+  fork.className = "edit-btn fork-btn";
+  fork.title =
+    regenerateText === undefined
+      ? "Fork conversation from here"
+      : "Fork and regenerate from this message";
+  fork.setAttribute("aria-label", fork.title);
+  fork.innerHTML =
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v3.2c0 1.3 1 2.3 2.3 2.3h1.2M4 13.5v-3.2C4 9 5 8 6.3 8h4.2M8.5 5l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Fork</span>';
+  fork.addEventListener("click", async () => {
+    if (!forkHandler || fork.disabled) return;
+    fork.disabled = true;
+    let accepted = false;
+    try {
+      accepted = await forkHandler(seq, regenerateText);
+    } catch {
+      accepted = false;
+    } finally {
+      if (!accepted && fork.isConnected) fork.disabled = false;
+    }
+  });
+  return fork;
+}
+
+function startUserEdit(r, bubble, actions, text, attachments, seq) {
+  if (!editHandler || r.classList.contains("editing")) return;
+  r.classList.add("editing");
+  actions.hidden = true;
+  bubble.textContent = "";
+
+  const input = document.createElement("textarea");
+  input.className = "user-edit-input";
+  input.value = text;
+  input.rows = Math.min(8, Math.max(2, text.split("\n").length));
+  input.setAttribute("aria-label", "Edit message");
+  bubble.appendChild(input);
+  renderAttachments(bubble, attachments);
+
+  const editActions = document.createElement("div");
+  editActions.className = "user-edit-actions";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "btn";
+  cancel.textContent = "Cancel";
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "btn btn-primary";
+  save.textContent = "Save & regenerate";
+  editActions.append(cancel, save);
+  r.appendChild(editActions);
+
+  const finish = (shouldSave) => {
+    if (!r.classList.contains("editing")) return;
+    const edited = input.value.trim();
+    if (shouldSave && !edited && !attachments.length) return;
+    if (shouldSave && !editHandler(seq, edited)) return;
+    if (shouldSave) {
+      // Editing branches the conversation: remove every rendered row after
+      // this user message. The server performs the matching durable rewind.
+      while (r.nextElementSibling) r.nextElementSibling.remove();
+      text = edited;
+    }
+    renderUserBubble(bubble, text, attachments);
+    editActions.remove();
+    actions.hidden = false;
+    r.classList.remove("editing");
+    scrollToBottom(true);
+  };
+  cancel.addEventListener("click", () => finish(false));
+  save.addEventListener("click", () => finish(true));
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") finish(false);
+    else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) finish(true);
+  });
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+export function addUserMessage(text, attachments = [], synthetic = false, seq = null) {
   const r = row(synthetic ? "event" : "user");
   const bubble = document.createElement("div");
   bubble.className = synthetic ? "note system media-note" : "bubble-user";
-  if (text) bubble.appendChild(document.createTextNode(text));
-  else bubble.appendChild(document.createTextNode("Attached media"));
-  renderAttachments(bubble, attachments);
+  renderUserBubble(bubble, text, attachments);
   r.appendChild(bubble);
+  if (!synthetic && Number.isInteger(seq)) {
+    r.dataset.seq = String(seq);
+    const actions = document.createElement("div");
+    actions.className = "user-actions";
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "edit-btn";
+    edit.title = "Edit message";
+    edit.setAttribute("aria-label", "Edit message");
+    edit.innerHTML =
+      '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.8 2.3l2.9 2.9-7.5 7.5-3.5.6.6-3.5zM9.7 3.4l2.9 2.9" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Edit</span>';
+    edit.addEventListener("click", () =>
+      startUserEdit(r, bubble, actions, text, attachments, seq),
+    );
+    actions.append(edit, forkButton(seq, text));
+    r.appendChild(actions);
+  }
   scrollToBottom();
+  return r;
 }
 
 // --- streaming assistant reply ---------------------------------------------------
@@ -181,21 +293,26 @@ export function appendAgentText(text) {
 
 // `finalText`, when given, is the authoritative full text from the Final
 // event and replaces whatever deltas accumulated.
-export function finalizeAgentMessage(finalText) {
-  if (!streaming) return;
-  if (streaming.rafId) cancelAnimationFrame(streaming.rafId);
-  if (finalText) streaming.raw = finalText;
-  streaming.body.innerHTML = renderMarkdown(streaming.raw);
+function appendAgentActions(col, raw, seq = null) {
   const actions = document.createElement("div");
   actions.className = "msg-actions";
   const copy = document.createElement("button");
   copy.type = "button";
   copy.className = "copy-btn";
   copy.title = "Copy message";
-  copy.dataset.raw = streaming.raw;
+  copy.dataset.raw = raw;
   copy.innerHTML = COPY_ICON_SVG + "<span>Copy</span>";
   actions.appendChild(copy);
-  streaming.col.appendChild(actions);
+  if (Number.isInteger(seq)) actions.appendChild(forkButton(seq));
+  col.appendChild(actions);
+}
+
+export function finalizeAgentMessage(finalText) {
+  if (!streaming) return;
+  if (streaming.rafId) cancelAnimationFrame(streaming.rafId);
+  if (finalText) streaming.raw = finalText;
+  streaming.body.innerHTML = renderMarkdown(streaming.raw);
+  appendAgentActions(streaming.col, streaming.raw);
   streaming = null;
   scrollToBottom();
 }
@@ -217,13 +334,22 @@ export function abandonStreaming() {
   streaming = null;
 }
 
-export function addAgentMarkdown(text) {
+export function removeStreamingMessage() {
+  if (!streaming) return;
+  if (streaming.rafId) cancelAnimationFrame(streaming.rafId);
+  const r = streaming.col.parentElement;
+  streaming = null;
+  if (r) r.remove();
+}
+
+export function addAgentMarkdown(text, seq = null) {
   hideTyping();
   const col = agentRow();
   const body = document.createElement("div");
   body.className = "agent-body md";
   body.innerHTML = renderMarkdown(text);
   col.appendChild(body);
+  appendAgentActions(col, text, seq);
   scrollToBottom();
   return body;
 }
@@ -318,6 +444,14 @@ export function resolveToolCard(id, name, ok, content, attachments = []) {
 // Forget unresolved cards (e.g. a replayed crashed turn): a later result must
 // not pair with them.
 export function resetPendingTools() {
+  pendingTools = [];
+}
+
+export function cancelPendingTools() {
+  for (const tool of pendingTools) {
+    tool.status.innerHTML = ERR_ICON;
+    tool.body.appendChild(toolSection("Stopped", "Cancelled by user", true));
+  }
   pendingTools = [];
 }
 

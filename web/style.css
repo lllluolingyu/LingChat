@@ -655,6 +655,56 @@ main#messages {
   opacity: 0.65;
 }
 .bubble-user .attachment-grid { margin-top: 8px; }
+.user-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+  margin-top: 4px;
+  opacity: 0;
+  transition: opacity var(--motion-fast);
+}
+.row.user:hover .user-actions,
+.row.user.editing .user-actions,
+.user-actions:focus-within { opacity: 1; }
+.user-actions[hidden],
+.turn-active .user-actions { display: none; }
+.edit-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 7px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted-solid);
+  cursor: pointer;
+  font-size: 11.5px;
+}
+.edit-btn:hover { background: var(--glass-bg); color: var(--text-2); }
+.edit-btn svg { width: 14px; height: 14px; }
+.edit-btn:disabled { opacity: 0.45; cursor: wait; }
+.turn-active .fork-btn { display: none; }
+.row.user.editing { width: min(78%, 720px); }
+.row.user.editing .bubble-user { width: 100%; max-width: none; }
+.user-edit-input {
+  display: block;
+  width: 100%;
+  min-height: 74px;
+  padding: 2px;
+  border: none;
+  outline: none;
+  resize: vertical;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1.5;
+}
+.user-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 7px;
+}
 .attachment-grid {
   display: flex;
   flex-wrap: wrap;
@@ -750,6 +800,7 @@ main#messages {
 .msg-actions .copy-btn { color: var(--muted-solid); }
 .msg-actions .copy-btn:hover { background: var(--glass-bg); color: var(--text-2); }
 .msg-actions .copy-btn.copied { color: var(--ok); }
+.msg-actions .fork-btn { color: var(--muted-solid); }
 
 /* events (tool cards, notes) share the agent indent so the thread aligns */
 .row.event { padding-left: 42px; }
@@ -1157,7 +1208,8 @@ main#messages {
 }
 #input::placeholder { color: var(--muted-solid); }
 
-#send {
+#send,
+#stop {
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -1172,10 +1224,13 @@ main#messages {
   box-shadow: 0 10px 28px color-mix(in srgb, var(--accent-strong) 34%, transparent), 0 1px 0 rgba(255, 255, 255, 0.3) inset;
   transition: opacity var(--motion-fast), transform var(--motion-fast), filter var(--motion-fast), box-shadow var(--motion-fast);
 }
-#send svg { width: 16px; height: 16px; }
-#send:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.08); }
-#send:active:not(:disabled) { transform: translateY(0); }
-#send:disabled {
+#stop { background: var(--text); color: var(--bg); }
+#send[hidden], #stop[hidden] { display: none; }
+#send svg, #stop svg { width: 16px; height: 16px; }
+#send:hover:not(:disabled), #stop:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.08); }
+#send:active:not(:disabled), #stop:active:not(:disabled) { transform: translateY(0); }
+#send:disabled,
+#stop:disabled {
   background: var(--surface-3);
   color: var(--muted-solid);
   cursor: not-allowed;

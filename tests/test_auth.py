@@ -115,6 +115,17 @@ def test_main_refuses_non_loopback_bind_without_optin(tmp_path, capsys):
     assert "refusing to bind" in capsys.readouterr().err
 
 
+def test_main_reports_profile_errors_without_traceback(tmp_path, capsys):
+    from lingchat.__main__ import main
+
+    rc = main(["--profile", str(tmp_path / "missing-profile")])
+
+    assert rc == 2
+    stderr = capsys.readouterr().err
+    assert "failed to start LingChat" in stderr
+    assert "Traceback" not in stderr
+
+
 def test_main_prints_bracketed_ipv6_url(monkeypatch, capsys):
     from types import SimpleNamespace
 
@@ -219,6 +230,95 @@ class _FakeWS:
         self.sent.append(msg)
 
 
+async def test_stop_before_agent_run_is_a_successful_cancellation(tmp_path):
+    """An immediate Stop can beat the wrapper task to Agent.run entirely."""
+    from lingchat.server import WebSession
+    from lingcore.config import AgentProfile
+    from lingcore.message import UserInput
+
+    profile = AgentProfile.load(_write_profile(tmp_path, tools=[]))
+    ws = _FakeWS()
+    session = WebSession(
+        ws,
+        profile,
+        tmp_path,
+        llm_factory=lambda: FakeLLM([{"text": "recovered"}]),
+    )
+
+    # Keep the wrapper outside Agent.run so this deterministically exercises
+    # the pre-checkpoint cancellation path instead of relying on scheduler luck.
+    await session._run_lock.acquire()
+    try:
+        assert session.spawn_turn(UserInput(text="cancel immediately"))
+        assert await session.stop_turn() is True
+    finally:
+        session._run_lock.release()
+
+    assert ws.sent == [
+        {"type": "cancelled", "reason": "stopped by user"},
+        {"type": "turn_end"},
+    ]
+    assert session.agent._turn_checkpoint is None
+
+    # The same WebSession remains immediately reusable.
+    assert session.spawn_turn(UserInput(text="try again"))
+    task = session._turn_task
+    assert task is not None
+    await task
+    assert any(
+        msg["type"] == "final" and msg["text"] == "recovered"
+        for msg in ws.sent
+    )
+
+
+class _DisconnectingWS(_FakeWS):
+    def __init__(self) -> None:
+        super().__init__()
+        self._connected = True
+
+    async def send_json(self, msg: dict) -> None:
+        if self._connected and msg["type"] == "text":
+            self._connected = False
+            raise WebSocketDisconnect(code=1006)
+        await super().send_json(msg)
+
+
+async def test_outbound_disconnect_closes_agent_stream_before_returning(tmp_path):
+    """A failed send repairs the lease without finalizing from its driver."""
+    from lingchat.server import WebSession
+    from lingcore.config import AgentProfile
+    from lingcore.message import UserInput
+
+    profile = AgentProfile.load(_write_profile(tmp_path, tools=[]))
+    session = WebSession(
+        _DisconnectingWS(),
+        profile,
+        tmp_path,
+        llm_factory=lambda: FakeLLM([
+            {"text": "disconnected reply"},
+            {"text": "recovered"},
+        ]),
+    )
+
+    await session._run_turn(UserInput(text="first"))
+
+    # Explicit stream ownership makes cleanup synchronous with _run_turn: the
+    # accepted user input remains, but no turn lease or partial answer does.
+    assert session.agent._turn_checkpoint is None
+    assert [message.content for message in session.agent.memory.messages] == [
+        "first"
+    ]
+
+    ws = _FakeWS()
+    session.ws = ws
+    await session._run_turn(UserInput(text="second"))
+    assert any(
+        msg["type"] == "final" and msg["text"] == "recovered"
+        for msg in ws.sent
+    )
+    assert ws.sent[-1] == {"type": "turn_end"}
+
+
 async def test_aclose_cancels_in_flight_turn(tmp_path):
     # aclose() must cancel a turn blocked awaiting a confirmation (e.g. a
     # long/pending run_shell), so a disconnect never leaves a detached agent
@@ -248,3 +348,4 @@ async def test_aclose_cancels_in_flight_turn(tmp_path):
     # The pending confirmation is cleared and the turn task is finished.
     assert not session._pending_confirms
     assert all(t.done() for t in session._tasks)
+    assert session.agent._turn_checkpoint is None

@@ -162,3 +162,42 @@ def test_shell_confirm_round_trip_denied(tmp_path):
         # Denied command becomes a failed tool result fed back to the model.
         assert results and results[0]["ok"] is False
         assert "declined" in results[0]["content"]
+
+
+def test_shell_confirm_non_boolean_fails_closed(tmp_path):
+    profile = _write_profile(tmp_path, tools=["run_shell"])
+    turns = [
+        {
+            "tool_calls": [
+                ToolCall(
+                    id="c1",
+                    name="run_shell",
+                    arguments={"command": "echo must-not-run"},
+                )
+            ]
+        },
+        {"text": "denied"},
+    ]
+    app = create_app(
+        profile,
+        require_auth=False,
+        llm_factory=lambda: FakeLLM(turns),
+    )
+    with TestClient(app).websocket_connect("/ws") as ws:
+        ws.receive_json()  # hello
+        ws.send_json({"type": "user", "text": "danger"})
+        while True:
+            message = ws.receive_json()
+            if message["type"] == "confirm":
+                confirm_id = message["id"]
+                break
+
+        # A client bug must not turn a truthy string into authorization.
+        ws.send_json(
+            {"type": "confirm_response", "id": confirm_id, "approved": "false"}
+        )
+        messages = _drain_until(ws, "turn_end")
+
+    result = next(message for message in messages if message["type"] == "tool_result")
+    assert result["ok"] is False
+    assert "declined" in result["content"]

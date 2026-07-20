@@ -161,8 +161,14 @@ export function reconnectNow() {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
-  if (ws && ws.readyState === WebSocket.OPEN) {
+  if (
+    ws &&
+    (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)
+  ) {
     switching = true;
+    // A session switch can happen before the initial handshake completes.
+    // Close that CONNECTING socket too: replacing it without closing would
+    // leave a stale server connection holding the old session attachment.
     ws.close(); // close handler reconnects immediately
   } else {
     switching = false;
@@ -211,7 +217,7 @@ function answerConfirm(approved) {
   }
 }
 
-function resetConfirms() {
+export function resetConfirms() {
   confirmQueue = [];
   confirmEl.classList.add("hidden");
 }

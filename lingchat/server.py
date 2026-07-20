@@ -20,7 +20,8 @@ authoritative in the ``hello`` message — an unknown-but-well-formed client id
 is simply adopted (rows are lazy, so reconnecting before ever speaking costs
 nothing). A session already attached in this process is refused with
 ``session_busy`` so two tabs cannot interleave one transcript. REST endpoints
-under ``/api/sessions`` serve the sidebar: list, transcript, rename, delete.
+under ``/api/sessions`` serve the sidebar: list, transcript + durable runtime
+events, cursor-based event replay, atomic prefix fork, rename, and delete.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
@@ -44,7 +45,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StrictInt
 
 from lingcore.agent import Agent
 from lingcore.config import AgentProfile
@@ -59,10 +60,18 @@ from lingcore.events import (
     TextDelta,
     ToolCallStarted,
     ToolResultEvent,
+    TurnCancelled,
 )
 from lingcore.message import Attachment, Message, UserInput
 from lingcore.media import attachment_from_wire
-from lingcore.sessions import SessionStore, is_session_id, new_session_id, open_store
+from lingcore.sessions import (
+    SessionEvent,
+    SessionStore,
+    is_session_id,
+    new_session_id,
+    open_store,
+)
+
 
 def _find_web_dir() -> Path:
     """Locate the static UI: ``lingchat/web`` in an installed wheel (the build
@@ -145,6 +154,8 @@ def _event_to_msg(event: AgentEvent) -> dict[str, Any]:
                 "reason": reason,
                 "discarded_chars": discarded_chars,
             }
+        case TurnCancelled(reason):
+            return {"type": "cancelled", "reason": reason}
         case Final(content):
             return {"type": "final", "text": content}
         case Error(message):
@@ -152,7 +163,7 @@ def _event_to_msg(event: AgentEvent) -> dict[str, Any]:
     return {"type": "unknown"}  # pragma: no cover - exhaustive match above
 
 
-def _stored_to_display(m: Message) -> dict[str, Any]:
+def _stored_to_display(seq: int, m: Message) -> dict[str, Any]:
     """Map one stored message to the shape the transcript endpoint serves.
 
     ``ToolResult.ok`` is not stored on ``Message``; the loop encodes failures
@@ -161,13 +172,15 @@ def _stored_to_display(m: Message) -> dict[str, Any]:
     """
     if m.role == "user":
         return {
+            "seq": seq,
             "role": "user",
-            "text": m.content,
+            "text": m.input_text if m.input_text is not None else m.content,
             "name": m.name,
             "attachments": _attachment_payloads(m.attachments),
         }
     if m.role == "assistant":
         return {
+            "seq": seq,
             "role": "assistant",
             "text": m.content,
             "tool_calls": [
@@ -176,6 +189,7 @@ def _stored_to_display(m: Message) -> dict[str, Any]:
             ],
         }
     return {
+        "seq": seq,
         "role": "tool",
         "id": m.tool_call_id,
         "name": m.name,
@@ -184,8 +198,66 @@ def _stored_to_display(m: Message) -> dict[str, Any]:
     }
 
 
+def _stored_event_to_display(event: SessionEvent) -> dict[str, Any] | None:
+    """Map a durable LingCore runtime event to the replay wire contract.
+
+    Events are derived state, so a malformed payload is omitted rather than
+    making the canonical transcript endpoint fail. ``event_seq`` remains a
+    monotonic cursor even when an omitted or rewound event leaves a gap.
+    """
+    base = {
+        "event_seq": event.event_seq,
+        "message_seq": event.message_seq,
+        "created_at": event.created_at.isoformat(),
+    }
+    if event.kind == "compaction":
+        keys = (
+            "summarized_messages",
+            "before_tokens",
+            "after_tokens",
+        )
+        values = [event.payload.get(key) for key in keys]
+        if not all(
+            isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            for value in values
+        ):
+            return None
+        return {
+            **base,
+            "type": "compact",
+            **dict(zip(keys, values, strict=True)),
+        }
+    if event.kind == "skill_state":
+        state: dict[str, list[str]] = {}
+        for key in ("active", "activated", "deactivated"):
+            value = event.payload.get(key)
+            if not isinstance(value, list) or not all(
+                isinstance(name, str) and name for name in value
+            ):
+                return None
+            state[key] = list(dict.fromkeys(value))
+        return {**base, "type": "skill_state", **state}
+    return None
+
+
+def _replay_events(
+    store: SessionStore, session_id: str, *, after: int = -1
+) -> list[dict[str, Any]]:
+    display: list[dict[str, Any]] = []
+    for event in store.events(session_id, after_seq=after):
+        mapped = _stored_event_to_display(event)
+        if mapped is not None:
+            display.append(mapped)
+    return display
+
+
 class _RenameBody(BaseModel):
     title: str
+
+
+class _ForkBody(BaseModel):
+    through_seq: StrictInt | None = Field(default=None, ge=0)
+    title: str | None = None
 
 
 class WebSession:
@@ -201,29 +273,39 @@ class WebSession:
         session_id: str | None = None,
     ) -> None:
         self.ws = ws
+        self.profile = profile
+        self._base_dir = base_dir
+        self._llm_factory = llm_factory
         # Per-connection tool_options dict so a future "allow always" stays
         # isolated to this session (mirrors the CLI composition root).
         self._tool_options = dict(profile.tool_options)
         self._store = store
         self._session_id = session_id
-        self.agent = Agent.from_profile(
-            profile,
-            confirm=self.confirm,
-            base_dir=base_dir,
-            tool_options=self._tool_options,
-            llm=llm_factory() if llm_factory is not None else None,
-            session_store=store,
-            session_id=session_id,
-        )
-        self.profile = profile
+        self.agent = self._build_agent()
         # One future per in-flight confirmation, keyed by a generated id, so two
         # simultaneous tool calls (parallel_tools) each get their own round-trip
         # and an approval is never misrouted to the wrong command.
         self._pending_confirms: dict[str, asyncio.Future[bool]] = {}
         self._run_lock = asyncio.Lock()
-        # In-flight turn tasks, tracked so a disconnect can cancel and await them
-        # before the session lease is released (no orphaned agent on the store).
+        # Exactly one turn may be active. This makes Stop deterministic and
+        # rejects accidental double-submits instead of silently queueing them.
         self._tasks: set[asyncio.Task[None]] = set()
+        self._turn_task: asyncio.Task[None] | None = None
+        self._turn_terminal = False
+
+    def _build_agent(self, *, llm: Any = None) -> Agent:
+        client = llm
+        if client is None and self._llm_factory is not None:
+            client = self._llm_factory()
+        return Agent.from_profile(
+            self.profile,
+            confirm=self.confirm,
+            base_dir=self._base_dir,
+            tool_options=self._tool_options,
+            llm=client,
+            session_store=self._store,
+            session_id=self._session_id,
+        )
 
     async def confirm(self, command: str) -> bool:
         """Ask the browser to approve a command; await its click.
@@ -253,11 +335,46 @@ class WebSession:
         if fut is not None and not fut.done():
             fut.set_result(approved)
 
-    def spawn_turn(self, incoming: UserInput) -> None:
-        """Launch a turn as a tracked task (so disconnect can cancel it)."""
+    def spawn_turn(self, incoming: UserInput) -> bool:
+        """Launch one turn, refusing to queue behind an active turn."""
+        if self._turn_task is not None and not self._turn_task.done():
+            return False
         task = asyncio.create_task(self._run_turn(incoming))
+        self._turn_task = task
+        self._turn_terminal = False
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        task.add_done_callback(self._turn_done)
+        return True
+
+    def _turn_done(self, task: asyncio.Task[None]) -> None:
+        self._tasks.discard(task)
+        if self._turn_task is task:
+            self._turn_task = None
+            self._turn_terminal = False
+
+    async def stop_turn(self) -> bool:
+        """Stop the active turn, repair its history, and notify the browser."""
+        task = self._turn_task
+        if task is None or task.done() or self._turn_terminal:
+            await self._safe_send({"type": "stop_ignored"})
+            return False
+        agent_turn_started = self.agent.cancel_turn()
+        if not agent_turn_started:
+            task.cancel()  # the task may not have entered Agent.run yet
+        await asyncio.gather(task, return_exceptions=True)
+        if not task.cancelled():
+            return False
+        # cancel_turn() succeeds only after Agent acquired its checkpoint. An
+        # immediate Stop can cancel this wrapper before that point; there is no
+        # Agent state to finalize, but it is still a successful UI cancellation.
+        event: AgentEvent = (
+            self.agent.finalize_cancelled_turn()
+            if agent_turn_started
+            else TurnCancelled()
+        )
+        await self._safe_send(_event_to_msg(event))
+        await self._safe_send({"type": "turn_end"})
+        return True
 
     async def aclose(self) -> None:
         """Tear down on disconnect: cancel in-flight turns and await them.
@@ -266,22 +383,97 @@ class WebSession:
         the shared session before the lease is released — otherwise a second tab
         could attach and a second agent interleave writes on the same transcript.
         """
-        for task in list(self._tasks):
+        tasks = list(self._tasks)
+        agent_turn_started = self.agent.cancel_turn()
+        for task in tasks:
             task.cancel()
-        if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if agent_turn_started and any(task.cancelled() for task in tasks):
+            self.agent.finalize_cancelled_turn()
 
     async def _run_turn(self, incoming: UserInput) -> None:
         # Serialize turns so one connection's runs share memory safely.
         async with self._run_lock:
+            turn = self.agent.run(incoming)
             try:
-                async for event in self.agent.run(incoming):
-                    await self.ws.send_json(_event_to_msg(event))
-            except (WebSocketDisconnect, asyncio.CancelledError):
+                # A failure in the loop body does not make ``async for`` close
+                # its generator immediately. Own it explicitly so a failed
+                # outbound send rolls back the abandoned Agent turn before this
+                # task exits, rather than leaving cleanup to asyncgen GC.
+                async with aclosing(turn):
+                    async for event in turn:
+                        if isinstance(event, (Final, Error)):
+                            self._turn_terminal = True
+                        await self.ws.send_json(_event_to_msg(event))
+            except WebSocketDisconnect:
+                # The owned stream has already repaired any non-terminal turn.
+                # The reader loop will observe the same closed socket; do not
+                # leave an unobserved exception on this background task.
+                return
+            except asyncio.CancelledError:
                 raise
             except Exception as e:  # never let one turn kill the connection
+                self._turn_terminal = True
                 await self._safe_send({"type": "error", "message": f"internal error: {e!r}"})
             await self._safe_send({"type": "turn_end"})
+
+    async def _edit_turn(self, seq: object, text: str) -> None:
+        """Rewind to a stored user message and regenerate from edited text."""
+        if self._turn_task is not None and not self._turn_task.done():
+            await self._safe_send(
+                {"type": "edit_rejected", "message": "wait for or stop the active turn first"}
+            )
+            return
+        if self._store is None or self._session_id is None:
+            await self._safe_send(
+                {"type": "edit_rejected", "message": "editing requires session history"}
+            )
+            return
+        if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
+            await self._safe_send(
+                {"type": "edit_rejected", "message": "invalid message sequence"}
+            )
+            return
+        try:
+            record = next(
+                (
+                    record
+                    for record in self._store.message_records(self._session_id)
+                    if record.seq == seq
+                ),
+                None,
+            )
+            if record is None:
+                raise SessionError(
+                    f"no message {seq} in session {self._session_id!r}"
+                )
+            candidate = record.message
+            if candidate.role != "user" or candidate.name is not None:
+                raise SessionError("only an ordinary user message can be edited")
+            if not text.strip() and not candidate.attachments:
+                await self._safe_send(
+                    {
+                        "type": "edit_rejected",
+                        "message": "an edited message cannot be empty",
+                    }
+                )
+                return
+            original = self._store.rewind_to_user_message(self._session_id, seq)
+        except SessionError as exc:
+            await self._safe_send({"type": "edit_rejected", "message": str(exc)})
+            return
+
+        # Rehydrate from the surviving branch while reusing the same model
+        # client and per-session tool options. LingCore restores any surviving
+        # compaction snapshot and dynamic-skill state during this rebuild.
+        self.agent = self._build_agent(llm=self.agent.llm)
+        await self._safe_send({"type": "edit_accepted", "seq": seq, "text": text})
+        incoming = UserInput(text=text, attachments=original.attachments)
+        if not self.spawn_turn(incoming):  # defensive; reader is serialized
+            await self._safe_send(
+                {"type": "edit_rejected", "message": "another turn started first"}
+            )
 
     async def _safe_send(self, msg: dict[str, Any]) -> None:
         """Send, tolerating a socket that closed underneath us."""
@@ -304,10 +496,20 @@ class WebSession:
                 "workspace": str(self.agent.tool_ctx.workspace),
                 "session": self._session_id,
                 "title": title,
+                "event_cursor": (
+                    self._store.event_cursor(self._session_id)
+                    if self._store is not None and self._session_id is not None
+                    else -1
+                ),
             }
         )
         while True:
             msg = await self.ws.receive_json()
+            if not isinstance(msg, dict):
+                await self.ws.send_json(
+                    {"type": "error", "message": "invalid protocol message"}
+                )
+                continue
             kind = msg.get("type")
             if kind == "user":
                 text = str(msg.get("text", ""))
@@ -324,13 +526,25 @@ class WebSession:
                     )
                 except ValueError as e:
                     await self.ws.send_json({"type": "error", "message": f"attachment error: {e}"})
+                    await self.ws.send_json({"type": "turn_end"})
                     continue
                 if incoming is not None:
                     # Launch as a tracked task so confirm replies can still be
                     # read concurrently and a disconnect can cancel it cleanly.
-                    self.spawn_turn(incoming)
+                    if not self.spawn_turn(incoming):
+                        await self.ws.send_json({"type": "turn_busy"})
+            elif kind == "stop":
+                await self.stop_turn()
+            elif kind == "edit":
+                await self._edit_turn(msg.get("seq"), str(msg.get("text", "")))
             elif kind == "confirm_response":
-                self._resolve_confirm(msg.get("id"), bool(msg.get("approved")))
+                raw_id = msg.get("id")
+                if raw_id is not None and not isinstance(raw_id, str):
+                    continue
+                # Confirmation is a security boundary: only the literal JSON
+                # boolean true approves. Strings/numbers/missing values fail
+                # closed instead of inheriting Python truthiness.
+                self._resolve_confirm(raw_id, msg.get("approved") is True)
 
 
 def create_app(
@@ -475,8 +689,61 @@ def create_app(
         meta = store.get(session_id) if store is not None else None
         if meta is None:
             raise HTTPException(status_code=404, detail="unknown session")
-        display = [_stored_to_display(m) for m in store.messages(session_id)]
-        return {**meta.model_dump(mode="json"), "messages": display}
+        display = [
+            _stored_to_display(record.seq, record.message)
+            for record in store.message_records(session_id)
+        ]
+        return {
+            **meta.model_dump(mode="json"),
+            "messages": display,
+            "events": _replay_events(store, session_id),
+            "event_cursor": store.event_cursor(session_id),
+        }
+
+    @app.get("/api/sessions/{session_id}/events")
+    async def replay_session_events(
+        session_id: str,
+        after: int = Query(default=-1, ge=-1),
+        _: None = Depends(_require_token),
+    ) -> dict[str, Any]:
+        meta = store.get(session_id) if store is not None else None
+        if meta is None:
+            raise HTTPException(status_code=404, detail="unknown session")
+        return {
+            "session": session_id,
+            "events": _replay_events(store, session_id, after=after),
+            # Never move a caller's cursor backwards when Edit removed the
+            # branch containing its last event. AUTOINCREMENT guarantees the
+            # next replacement event will still compare greater than ``after``.
+            "cursor": max(after, store.event_cursor(session_id)),
+        }
+
+    @app.post("/api/sessions/{session_id}/fork")
+    async def fork_session(
+        session_id: str,
+        body: _ForkBody,
+        _: None = Depends(_require_token),
+    ) -> dict[str, Any]:
+        if store is None or store.get(session_id) is None:
+            raise HTTPException(status_code=404, detail="unknown session")
+        title: str | None = None
+        if body.title is not None:
+            title = body.title.strip()
+            if not title:
+                raise HTTPException(status_code=422, detail="title must not be empty")
+        try:
+            forked = store.fork_session(
+                session_id,
+                through_seq=body.through_seq,
+                title=title,
+            )
+        except SessionError as exc:
+            # The source exists, so remaining failures describe a boundary that
+            # cannot form a valid branch (missing seq, incomplete tool block,
+            # empty/corrupt source). Nothing was copied: the core operation is
+            # transactional.
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        return forked.model_dump(mode="json")
 
     @app.delete("/api/sessions/{session_id}")
     async def delete_session(session_id: str, _: None = Depends(_require_token)) -> dict[str, Any]:

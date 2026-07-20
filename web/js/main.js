@@ -8,6 +8,7 @@
 import {
   connect,
   initConnection,
+  resetConfirms,
   showConfirm,
   socketOpen,
   suspendReconnect,
@@ -15,11 +16,13 @@ import {
 } from "./connection.js";
 import {
   adoptSession,
+  forkCurrentSession,
   getSessionId,
   loadThread,
   newChat,
   refreshSessions,
   setChatTitle,
+  takePendingForkEdit,
 } from "./sessions.js";
 import {
   abandonStreaming,
@@ -39,6 +42,10 @@ import {
   showTyping,
   stickToBottom,
   addAgentMarkdown,
+  cancelPendingTools,
+  removeStreamingMessage,
+  setEditHandler,
+  setForkHandler,
 } from "./thread.js";
 
 const $ = (id) => document.getElementById(id);
@@ -46,6 +53,7 @@ const $ = (id) => document.getElementById(id);
 const formEl = $("composer");
 const inputEl = $("input");
 const sendEl = $("send");
+const stopEl = $("stop");
 const attachEl = $("attach");
 const fileInputEl = $("file-input");
 const attachmentTrayEl = $("attachment-tray");
@@ -62,7 +70,12 @@ const focusInput = () => {
 };
 
 let connected = false;
+let turnActive = false;
+let transcriptSyncing = false;
+let transcriptSyncGeneration = 0;
+let pendingTurnNote = null;
 let pendingAttachments = [];
+let forkActive = false;
 
 const MAX_ATTACHMENTS = 4;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -78,6 +91,34 @@ const ALLOWED_MEDIA = new Set([
 
 // --- event stream -----------------------------------------------------------
 
+function setTurnActive(active) {
+  turnActive = active;
+  document.body.classList.toggle("turn-active", active);
+  sendEl.hidden = active;
+  stopEl.hidden = !active;
+  stopEl.disabled = !connected;
+  attachEl.disabled = active || transcriptSyncing || !connected;
+  updateSendState();
+}
+
+function reloadTranscript(note = null) {
+  const generation = ++transcriptSyncGeneration;
+  transcriptSyncing = true;
+  setTurnActive(false);
+  return loadThread()
+    .then(() => {
+      if (generation === transcriptSyncGeneration && note) {
+        addNote(note.kind, note.text);
+      }
+    })
+    .finally(() => {
+      if (generation !== transcriptSyncGeneration) return;
+      transcriptSyncing = false;
+      attachEl.disabled = !connected;
+      updateSendState();
+    });
+}
+
 function handle(msg) {
   switch (msg.type) {
     case "hello": {
@@ -90,9 +131,23 @@ function handle(msg) {
       adoptSession(msg.session || null); // server is authoritative
       clearThread();
       setChatTitle(msg.title || "");
-      loadThread();
+      pendingTurnNote = null;
+      reloadTranscript().then(() => {
+        const pending = takePendingForkEdit(msg.session);
+        if (!pending) return;
+        if (!wsSend({ type: "edit", seq: pending.seq, text: pending.text })) {
+          addNote("error", "The fork was created, but regeneration could not start.");
+          return;
+        }
+        pendingTurnNote = null;
+        setTurnActive(true);
+        showTyping();
+      });
       break;
     }
+    case "turn_busy":
+      addNote("error", "A turn is already running. Stop it before sending another message.");
+      break;
     case "session_busy":
       suspendReconnect();
       addNote(
@@ -132,6 +187,29 @@ function handle(msg) {
       hideTyping();
       showConfirm(msg.command, msg.id);
       break;
+    case "cancelled":
+      removeStreamingMessage();
+      cancelPendingTools();
+      resetConfirms();
+      hideTyping();
+      pendingTurnNote = { kind: "system", text: msg.reason || "Stopped by user" };
+      addNote(pendingTurnNote.kind, pendingTurnNote.text);
+      break;
+    case "edit_accepted":
+      showTyping();
+      break;
+    case "edit_rejected":
+      hideTyping();
+      reloadTranscript({
+        kind: "error",
+        text: msg.message || "The message could not be edited.",
+      });
+      break;
+    case "stop_ignored":
+      resetConfirms();
+      hideTyping();
+      reloadTranscript();
+      break;
     case "final":
       // Streamed text already rendered; ensure a bubble exists if Final
       // arrived without prior deltas.
@@ -142,12 +220,18 @@ function handle(msg) {
     case "turn_end":
       finalizeAgentMessage();
       hideTyping();
-      refreshSessions(); // titles / counts / ordering may have changed
+      setTurnActive(false);
+      {
+        const note = pendingTurnNote;
+        pendingTurnNote = null;
+        reloadTranscript(note);
+      }
       break;
     case "error":
       finalizeAgentMessage();
       hideTyping();
       addNote("error", msg.message);
+      pendingTurnNote = { kind: "error", text: msg.message };
       break;
   }
 }
@@ -155,7 +239,12 @@ function handle(msg) {
 // --- composer ----------------------------------------------------------------
 
 function updateSendState() {
-  sendEl.disabled = !connected || (!inputEl.value.trim() && !pendingAttachments.length);
+  sendEl.disabled =
+    turnActive ||
+    transcriptSyncing ||
+    !connected ||
+    (!inputEl.value.trim() && !pendingAttachments.length);
+  stopEl.disabled = !turnActive || !connected;
 }
 
 function mediaTypeForFile(file) {
@@ -234,19 +323,51 @@ function renderAttachmentTray() {
 
 function send() {
   const text = inputEl.value.trim();
-  if ((!text && !pendingAttachments.length) || !socketOpen()) return;
+  if (
+    turnActive ||
+    transcriptSyncing ||
+    (!text && !pendingAttachments.length) ||
+    !socketOpen()
+  ) return;
   const attachments = pendingAttachments;
+  if (!wsSend({ type: "user", text, attachments })) return;
+  pendingTurnNote = null;
   addUserMessage(text, attachments);
   finalizeAgentMessage();
   stickToBottom();
-  wsSend({ type: "user", text, attachments });
   inputEl.value = "";
   pendingAttachments = [];
   renderAttachmentTray();
   autosize();
   updateSendState();
+  setTurnActive(true);
   showTyping();
 }
+
+stopEl.addEventListener("click", () => {
+  if (!turnActive || !wsSend({ type: "stop" })) return;
+  stopEl.disabled = true;
+});
+
+setEditHandler((seq, text) => {
+  if (turnActive || transcriptSyncing || !socketOpen()) return false;
+  if (!wsSend({ type: "edit", seq, text })) return false;
+  pendingTurnNote = null;
+  setTurnActive(true);
+  return true;
+});
+
+setForkHandler(async (seq, regenerateText = undefined) => {
+  if (turnActive || transcriptSyncing || forkActive || !socketOpen()) return false;
+  forkActive = true;
+  try {
+    const forked = await forkCurrentSession(seq, regenerateText);
+    if (forked) pendingTurnNote = null;
+    return forked;
+  } finally {
+    forkActive = false;
+  }
+});
 
 formEl.addEventListener("submit", (e) => {
   e.preventDefault();
@@ -308,6 +429,8 @@ initConnection({
   onMessage: handle,
   onConnectedChange: (c) => {
     connected = c;
+    stopEl.disabled = !c || !turnActive;
+    attachEl.disabled = !c || turnActive || transcriptSyncing;
     updateSendState();
   },
   focusInput,

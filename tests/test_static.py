@@ -57,3 +57,31 @@ def test_es_module_imports_resolve():
         for spec in re.findall(r'from\s+"(\.{1,2}/[^"]+)"', text):
             target = (mod.parent / spec).resolve()
             assert target.is_file(), f"{mod.name} imports missing module {spec}"
+
+
+def test_stop_edit_and_fork_controls_are_wired():
+    index = (_WEB_DIR / "index.html").read_text(encoding="utf-8")
+    connection = (_WEB_DIR / "js" / "connection.js").read_text(encoding="utf-8")
+    main = (_WEB_DIR / "js" / "main.js").read_text(encoding="utf-8")
+    sessions = (_WEB_DIR / "js" / "sessions.js").read_text(encoding="utf-8")
+    thread = (_WEB_DIR / "js" / "thread.js").read_text(encoding="utf-8")
+
+    assert 'id="stop"' in index and "Stop response" in index
+    assert 'type: "stop"' in main
+    assert 'type: "edit"' in main
+    assert "setEditHandler" in thread
+    assert "Save & regenerate" in thread
+    assert "setForkHandler" in main and "setForkHandler" in thread
+    assert "/fork" in sessions and "takePendingForkEdit" in sessions
+    assert "Fork and regenerate from this message" in thread
+    assert "WebSocket.CONNECTING" in connection
+
+
+def test_durable_runtime_events_are_replayed_with_history():
+    sessions = (_WEB_DIR / "js" / "sessions.js").read_text(encoding="utf-8")
+
+    assert "data.events || []" in sessions
+    assert 'event.type === "compact"' in sessions
+    assert 'event.type === "skill_state"' in sessions
+    assert "compactNote(event)" in sessions
+    assert "byMessage.get(m.seq)" in sessions
