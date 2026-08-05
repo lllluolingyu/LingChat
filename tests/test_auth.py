@@ -11,12 +11,12 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 import pytest
+from lingcore.llm import LLMChunk
+from lingcore.message import Message, ToolCall
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from lingchat.server import create_app
-from lingcore.llm import LLMChunk
-from lingcore.message import Message, ToolCall
 
 
 class FakeLLM:
@@ -177,10 +177,14 @@ def test_rest_requires_token(tmp_path):
 def test_two_simultaneous_confirms_routed_by_id(tmp_path):
     profile = _write_profile(tmp_path, tools=["run_shell"])
     turns = [
-        {"tool_calls": [
-            ToolCall(id="c1", name="run_shell", arguments={"command": "echo alpha"}),
-            ToolCall(id="c2", name="run_shell", arguments={"command": "echo beta"}),
-        ]},
+        {
+            "tool_calls": [
+                ToolCall(
+                    id="c1", name="run_shell", arguments={"command": "echo alpha"}
+                ),
+                ToolCall(id="c2", name="run_shell", arguments={"command": "echo beta"}),
+            ]
+        },
         {"text": "both done"},
     ]
     app = create_app(profile, require_auth=False, llm_factory=lambda: FakeLLM(turns))
@@ -232,9 +236,10 @@ class _FakeWS:
 
 async def test_stop_before_agent_run_is_a_successful_cancellation(tmp_path):
     """An immediate Stop can beat the wrapper task to Agent.run entirely."""
-    from lingchat.server import WebSession
     from lingcore.config import AgentProfile
     from lingcore.message import UserInput
+
+    from lingchat.server import WebSession
 
     profile = AgentProfile.load(_write_profile(tmp_path, tools=[]))
     ws = _FakeWS()
@@ -265,10 +270,7 @@ async def test_stop_before_agent_run_is_a_successful_cancellation(tmp_path):
     task = session._turn_task
     assert task is not None
     await task
-    assert any(
-        msg["type"] == "final" and msg["text"] == "recovered"
-        for msg in ws.sent
-    )
+    assert any(msg["type"] == "final" and msg["text"] == "recovered" for msg in ws.sent)
 
 
 class _DisconnectingWS(_FakeWS):
@@ -285,19 +287,22 @@ class _DisconnectingWS(_FakeWS):
 
 async def test_outbound_disconnect_closes_agent_stream_before_returning(tmp_path):
     """A failed send repairs the lease without finalizing from its driver."""
-    from lingchat.server import WebSession
     from lingcore.config import AgentProfile
     from lingcore.message import UserInput
+
+    from lingchat.server import WebSession
 
     profile = AgentProfile.load(_write_profile(tmp_path, tools=[]))
     session = WebSession(
         _DisconnectingWS(),
         profile,
         tmp_path,
-        llm_factory=lambda: FakeLLM([
-            {"text": "disconnected reply"},
-            {"text": "recovered"},
-        ]),
+        llm_factory=lambda: FakeLLM(
+            [
+                {"text": "disconnected reply"},
+                {"text": "recovered"},
+            ]
+        ),
     )
 
     await session._run_turn(UserInput(text="first"))
@@ -305,17 +310,12 @@ async def test_outbound_disconnect_closes_agent_stream_before_returning(tmp_path
     # Explicit stream ownership makes cleanup synchronous with _run_turn: the
     # accepted user input remains, but no turn lease or partial answer does.
     assert session.agent._turn_checkpoint is None
-    assert [message.content for message in session.agent.memory.messages] == [
-        "first"
-    ]
+    assert [message.content for message in session.agent.memory.messages] == ["first"]
 
     ws = _FakeWS()
     session.ws = ws
     await session._run_turn(UserInput(text="second"))
-    assert any(
-        msg["type"] == "final" and msg["text"] == "recovered"
-        for msg in ws.sent
-    )
+    assert any(msg["type"] == "final" and msg["text"] == "recovered" for msg in ws.sent)
     assert ws.sent[-1] == {"type": "turn_end"}
 
 
@@ -325,13 +325,20 @@ async def test_aclose_cancels_in_flight_turn(tmp_path):
     # running on the session after the lease is released.
     import asyncio
 
-    from lingchat.server import WebSession
     from lingcore.config import AgentProfile
     from lingcore.message import UserInput
 
+    from lingchat.server import WebSession
+
     profile = AgentProfile.load(_write_profile(tmp_path, tools=["run_shell"]))
     ws = _FakeWS()
-    turns = [{"tool_calls": [ToolCall(id="c1", name="run_shell", arguments={"command": "echo x"})]}]
+    turns = [
+        {
+            "tool_calls": [
+                ToolCall(id="c1", name="run_shell", arguments={"command": "echo x"})
+            ]
+        }
+    ]
     session = WebSession(ws, profile, tmp_path, llm_factory=lambda: FakeLLM(turns))
 
     session.spawn_turn(UserInput(text="run"))

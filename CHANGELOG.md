@@ -3,6 +3,15 @@
 Notable user-facing LingChat changes are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Compatibility now covers `lingcore>=0.2.0,<0.4.0`, including the upcoming
+  LingCore 0.3 line.
+- CI tests against LingCore `main` instead of the 0.2.0 release commit, and now
+  enforces Ruff lint/format plus package-wide mypy checks.
+
 ## [0.2.0] - 2026-07-20
 
 ### Added

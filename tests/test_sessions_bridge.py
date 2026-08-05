@@ -14,11 +14,11 @@ import time
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+from lingcore.llm import LLMChunk
+from lingcore.message import Message, ToolCall
 from starlette.testclient import TestClient
 
 from lingchat.server import create_app
-from lingcore.llm import LLMChunk
-from lingcore.message import Message, ToolCall
 
 
 class FakeLLM:
@@ -56,11 +56,7 @@ def _write_profile(
     ws.mkdir(exist_ok=True)
     cfg = tmp_path / "config.yaml"
     cfg.write_text(
-        "name: test\n"
-        f"workspace: {ws}\n"
-        "llm:\n"
-        "  model: fake\n"
-        f"tools: {tools}\n" + extra,
+        f"name: test\nworkspace: {ws}\nllm:\n  model: fake\ntools: {tools}\n" + extra,
         encoding="utf-8",
     )
     return cfg
@@ -87,7 +83,9 @@ def _delete_when_released(client: TestClient, sid: str):
 
 def test_turn_is_stored_and_listed(tmp_path):
     profile = _write_profile(tmp_path)
-    app = create_app(profile, require_auth=False, llm_factory=lambda: FakeLLM([{"text": "Hello!"}]))
+    app = create_app(
+        profile, require_auth=False, llm_factory=lambda: FakeLLM([{"text": "Hello!"}])
+    )
     client = TestClient(app)
 
     with client.websocket_connect("/ws") as ws:
@@ -165,7 +163,11 @@ def test_websocket_over_total_attachment_limit_is_per_turn_error(tmp_path, monke
 def test_transcript_display_shapes(tmp_path):
     profile = _write_profile(tmp_path)
     turns = [
-        {"tool_calls": [ToolCall(id="c1", name="read_file", arguments={"path": "missing.txt"})]},
+        {
+            "tool_calls": [
+                ToolCall(id="c1", name="read_file", arguments={"path": "missing.txt"})
+            ]
+        },
         {"text": "could not read it"},
     ]
     app = create_app(profile, require_auth=False, llm_factory=lambda: FakeLLM(turns))
@@ -215,7 +217,10 @@ def test_resume_restores_history(tmp_path):
 
     data = client.get(f"/api/sessions/{sid}").json()
     assert [m["role"] for m in data["messages"]] == [
-        "user", "assistant", "user", "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
     ]
 
 
@@ -233,11 +238,13 @@ def test_compaction_event_is_forwarded(tmp_path):
             "    max_summary_chars: 1000\n"
         ),
     )
-    fake = FakeLLM([
-        {"text": "first answer"},
-        {"text": "compact summary"},
-        {"text": "second answer"},
-    ])
+    fake = FakeLLM(
+        [
+            {"text": "first answer"},
+            {"text": "compact summary"},
+            {"text": "second answer"},
+        ]
+    )
     app = create_app(profile, require_auth=False, llm_factory=lambda: fake)
     client = TestClient(app)
 
@@ -256,7 +263,9 @@ def test_compaction_event_is_forwarded(tmp_path):
 
     transcript = client.get(f"/api/sessions/{sid}").json()
     assert transcript["event_cursor"] >= 1
-    persisted = next(event for event in transcript["events"] if event["type"] == "compact")
+    persisted = next(
+        event for event in transcript["events"] if event["type"] == "compact"
+    )
     assert persisted["message_seq"] == 2
     assert persisted["summarized_messages"] == compact["summarized_messages"]
     assert persisted["before_tokens"] == compact["before_tokens"]
@@ -284,10 +293,12 @@ def test_dynamic_skill_state_persists_and_replays_after_reconnect(tmp_path):
         name="activate_skill",
         arguments={"name": "code-review"},
     )
-    first = FakeLLM([
-        {"tool_calls": [activation]},
-        {"text": "review mode ready"},
-    ])
+    first = FakeLLM(
+        [
+            {"tool_calls": [activation]},
+            {"text": "review mode ready"},
+        ]
+    )
     resumed = FakeLLM([{"text": "still reviewing"}])
     fakes = [first, resumed]
     app = create_app(
@@ -323,16 +334,15 @@ def test_dynamic_skill_state_persists_and_replays_after_reconnect(tmp_path):
         _drain_until(ws, "turn_end")
 
     assert "Group findings by severity" in resumed.calls[0][0].content
-    names = {
-        schema["function"]["name"]
-        for schema in (resumed.tool_schemas[0] or [])
-    }
+    names = {schema["function"]["name"] for schema in (resumed.tool_schemas[0] or [])}
     assert {"activate_skill", "read_file", "search"} <= names
 
 
 def test_unknown_valid_id_is_adopted_and_malformed_replaced(tmp_path):
     profile = _write_profile(tmp_path)
-    app = create_app(profile, require_auth=False, llm_factory=lambda: FakeLLM([{"text": "hi"}]))
+    app = create_app(
+        profile, require_auth=False, llm_factory=lambda: FakeLLM([{"text": "hi"}])
+    )
     client = TestClient(app)
 
     minted = "ab" * 16
@@ -361,7 +371,9 @@ def test_concurrent_attach_refused(tmp_path):
 
 def test_delete_and_rename(tmp_path):
     profile = _write_profile(tmp_path)
-    app = create_app(profile, require_auth=False, llm_factory=lambda: FakeLLM([{"text": "yo"}]))
+    app = create_app(
+        profile, require_auth=False, llm_factory=lambda: FakeLLM([{"text": "yo"}])
+    )
     client = TestClient(app)
 
     with client.websocket_connect("/ws") as ws:
@@ -374,8 +386,13 @@ def test_delete_and_rename(tmp_path):
 
     r = client.patch(f"/api/sessions/{sid}", json={"title": "renamed chat"})
     assert r.status_code == 200 and r.json()["title"] == "renamed chat"
-    assert client.patch(f"/api/sessions/{sid}", json={"title": "   "}).status_code == 422
-    assert client.patch(f"/api/sessions/{'9' * 32}", json={"title": "x"}).status_code == 404
+    assert (
+        client.patch(f"/api/sessions/{sid}", json={"title": "   "}).status_code == 422
+    )
+    assert (
+        client.patch(f"/api/sessions/{'9' * 32}", json={"title": "x"}).status_code
+        == 404
+    )
 
     assert _delete_when_released(client, sid).status_code == 200
     assert client.get(f"/api/sessions/{sid}").status_code == 404
@@ -384,7 +401,11 @@ def test_delete_and_rename(tmp_path):
 
 def test_sessions_disabled_profile(tmp_path):
     profile = _write_profile(tmp_path, extra="sessions:\n  enabled: false\n")
-    app = create_app(profile, require_auth=False, llm_factory=lambda: FakeLLM([{"text": "ephemeral"}]))
+    app = create_app(
+        profile,
+        require_auth=False,
+        llm_factory=lambda: FakeLLM([{"text": "ephemeral"}]),
+    )
     client = TestClient(app)
 
     listing = client.get("/api/sessions").json()
@@ -417,10 +438,12 @@ def test_sessions_in_package_profile_serves_notice(tmp_path, monkeypatch):
 
 def test_stop_cancels_stream_repairs_session_and_allows_next_turn(tmp_path):
     profile = _write_profile(tmp_path)
-    fake = FakeLLM([
-        {"text": "partial reply", "block": True},
-        {"text": "recovered answer"},
-    ])
+    fake = FakeLLM(
+        [
+            {"text": "partial reply", "block": True},
+            {"text": "recovered answer"},
+        ]
+    )
     app = create_app(profile, require_auth=False, llm_factory=lambda: fake)
     client = TestClient(app)
 
@@ -437,8 +460,7 @@ def test_stop_cancels_stream_repairs_session_and_allows_next_turn(tmp_path):
         ws.send_json({"type": "stop"})
         stopped = _drain_until(ws, "turn_end")
         assert any(
-            message["type"] == "cancelled"
-            and message["reason"] == "stopped by user"
+            message["type"] == "cancelled" and message["reason"] == "stopped by user"
             for message in stopped
         )
         assert not any(message["type"] == "final" for message in stopped)
@@ -446,8 +468,7 @@ def test_stop_cancels_stream_repairs_session_and_allows_next_turn(tmp_path):
         ws.send_json({"type": "user", "text": "try again"})
         recovered = _drain_until(ws, "turn_end")
         assert any(
-            message["type"] == "final"
-            and message["text"] == "recovered answer"
+            message["type"] == "final" and message["text"] == "recovered answer"
             for message in recovered
         )
 
@@ -457,16 +478,20 @@ def test_stop_cancels_stream_repairs_session_and_allows_next_turn(tmp_path):
         "user",
         "assistant",
     ]
-    assert all("partial reply" not in message.get("text", "") for message in data["messages"])
+    assert all(
+        "partial reply" not in message.get("text", "") for message in data["messages"]
+    )
 
 
 def test_edit_rewinds_tail_and_regenerates_from_edited_user_message(tmp_path):
     profile = _write_profile(tmp_path)
-    fake = FakeLLM([
-        {"text": "first answer"},
-        {"text": "second answer"},
-        {"text": "edited answer"},
-    ])
+    fake = FakeLLM(
+        [
+            {"text": "first answer"},
+            {"text": "second answer"},
+            {"text": "edited answer"},
+        ]
+    )
     app = create_app(profile, require_auth=False, llm_factory=lambda: fake)
     client = TestClient(app)
 
@@ -483,7 +508,8 @@ def test_edit_rewinds_tail_and_regenerates_from_edited_user_message(tmp_path):
         ws.send_json({"type": "edit", "seq": 0, "text": "edited first question"})
         edited = _drain_until(ws, "turn_end")
         assert any(
-            message == {
+            message
+            == {
                 "type": "edit_accepted",
                 "seq": 0,
                 "text": "edited first question",
@@ -536,11 +562,13 @@ def test_invalid_empty_edit_does_not_mutate_session(tmp_path):
 
 def test_edit_preserves_original_attachments(tmp_path):
     profile = _write_profile(tmp_path)
-    fake = FakeLLM([
-        {"text": "first answer"},
-        {"text": "image answer"},
-        {"text": "edited image answer"},
-    ])
+    fake = FakeLLM(
+        [
+            {"text": "first answer"},
+            {"text": "image answer"},
+            {"text": "edited image answer"},
+        ]
+    )
     app = create_app(profile, require_auth=False, llm_factory=lambda: fake)
     client = TestClient(app)
     payload = {
@@ -573,11 +601,13 @@ def test_edit_preserves_original_attachments(tmp_path):
 
 def test_fork_endpoint_preserves_source_and_supports_regeneration(tmp_path):
     profile = _write_profile(tmp_path)
-    fake = FakeLLM([
-        {"text": "first answer"},
-        {"text": "original second answer"},
-        {"text": "forked second answer"},
-    ])
+    fake = FakeLLM(
+        [
+            {"text": "first answer"},
+            {"text": "original second answer"},
+            {"text": "forked second answer"},
+        ]
+    )
     app = create_app(profile, require_auth=False, llm_factory=lambda: fake)
     client = TestClient(app)
     attachment = {
@@ -616,21 +646,31 @@ def test_fork_endpoint_preserves_source_and_supports_regeneration(tmp_path):
             "through_seq": 2,
         }
 
-        assert client.post(
-            f"/api/sessions/{source}/fork", json={"through_seq": 99}
-        ).status_code == 409
-        assert client.post(
-            f"/api/sessions/{source}/fork", json={"through_seq": -1}
-        ).status_code == 422
-        assert client.post(
-            f"/api/sessions/{source}/fork", json={"through_seq": True}
-        ).status_code == 422
-        assert client.post(
-            f"/api/sessions/{source}/fork", json={"title": "   "}
-        ).status_code == 422
-        assert client.post(
-            f"/api/sessions/{'e' * 32}/fork", json={}
-        ).status_code == 404
+        assert (
+            client.post(
+                f"/api/sessions/{source}/fork", json={"through_seq": 99}
+            ).status_code
+            == 409
+        )
+        assert (
+            client.post(
+                f"/api/sessions/{source}/fork", json={"through_seq": -1}
+            ).status_code
+            == 422
+        )
+        assert (
+            client.post(
+                f"/api/sessions/{source}/fork", json={"through_seq": True}
+            ).status_code
+            == 422
+        )
+        assert (
+            client.post(
+                f"/api/sessions/{source}/fork", json={"title": "   "}
+            ).status_code
+            == 422
+        )
+        assert client.post(f"/api/sessions/{'e' * 32}/fork", json={}).status_code == 404
 
     copied = client.get(f"/api/sessions/{destination}").json()
     assert [message["text"] for message in copied["messages"]] == [
@@ -667,5 +707,7 @@ def test_fork_endpoint_preserves_source_and_supports_regeneration(tmp_path):
     regenerated_context = [message.content for message in fake.calls[2]]
     assert "first answer" in regenerated_context
     assert any("second question" in content for content in regenerated_context)
-    assert all("original second answer" not in content for content in regenerated_context)
+    assert all(
+        "original second answer" not in content for content in regenerated_context
+    )
     assert fake.calls[2][-1].attachments[0].name == "branch.png"

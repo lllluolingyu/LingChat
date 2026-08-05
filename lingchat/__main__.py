@@ -13,9 +13,9 @@ import argparse
 import sys
 
 import uvicorn
+from lingcore.errors import LingCoreError
 
 from lingchat.server import create_app
-from lingcore.errors import LingCoreError
 
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
@@ -29,29 +29,36 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # do (a coding profile can run shell commands), so the operator names the
     # profile explicitly instead of inheriting a shell-enabled one silently.
     parser.add_argument(
-        "--profile", "-p",
+        "--profile",
+        "-p",
         required=True,
         help="Path to an agent profile YAML or its directory (e.g. a LingCore "
         "checkout's profiles/daily). Required: the profile decides what the "
         "served agent can do, including shell access.",
     )
     parser.add_argument(
-        "--workspace", "-w", default=None,
+        "--workspace",
+        "-w",
+        default=None,
         help="Override the profile's workspace directory.",
     )
     parser.add_argument(
-        "--host", default="127.0.0.1",
+        "--host",
+        default="127.0.0.1",
         help="Host to bind (default 127.0.0.1, loopback only). A non-loopback "
         "host is refused unless --allow-remote is also given.",
     )
     parser.add_argument(
-        "--allow-remote", action="store_true",
+        "--allow-remote",
+        action="store_true",
         help="Explicitly allow binding to a non-loopback host. Anyone who can "
         "reach the port and token gets everything the agent can do — for a "
         "shell-enabled profile that is remote code execution. Put TLS and "
         "network controls in front, and prefer a profile without run_shell.",
     )
-    parser.add_argument("--port", type=int, default=8000, help="Port to bind (default 8000).")
+    parser.add_argument(
+        "--port", type=int, default=8000, help="Port to bind (default 8000)."
+    )
     return parser.parse_args(argv)
 
 

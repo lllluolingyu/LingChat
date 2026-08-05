@@ -29,9 +29,10 @@ from __future__ import annotations
 import asyncio
 import secrets
 import uuid
+from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import (
@@ -45,8 +46,6 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, StrictInt
-
 from lingcore.agent import Agent
 from lingcore.config import AgentProfile
 from lingcore.errors import SessionError
@@ -62,8 +61,8 @@ from lingcore.events import (
     ToolResultEvent,
     TurnCancelled,
 )
-from lingcore.message import Attachment, Message, UserInput
 from lingcore.media import attachment_from_wire
+from lingcore.message import Attachment, Message, UserInput
 from lingcore.sessions import (
     SessionEvent,
     SessionStore,
@@ -71,6 +70,7 @@ from lingcore.sessions import (
     new_session_id,
     open_store,
 )
+from pydantic import BaseModel, Field, StrictInt
 
 
 def _find_web_dir() -> Path:
@@ -415,14 +415,19 @@ class WebSession:
                 raise
             except Exception as e:  # never let one turn kill the connection
                 self._turn_terminal = True
-                await self._safe_send({"type": "error", "message": f"internal error: {e!r}"})
+                await self._safe_send(
+                    {"type": "error", "message": f"internal error: {e!r}"}
+                )
             await self._safe_send({"type": "turn_end"})
 
     async def _edit_turn(self, seq: object, text: str) -> None:
         """Rewind to a stored user message and regenerate from edited text."""
         if self._turn_task is not None and not self._turn_task.done():
             await self._safe_send(
-                {"type": "edit_rejected", "message": "wait for or stop the active turn first"}
+                {
+                    "type": "edit_rejected",
+                    "message": "wait for or stop the active turn first",
+                }
             )
             return
         if self._store is None or self._session_id is None:
@@ -445,9 +450,7 @@ class WebSession:
                 None,
             )
             if record is None:
-                raise SessionError(
-                    f"no message {seq} in session {self._session_id!r}"
-                )
+                raise SessionError(f"no message {seq} in session {self._session_id!r}")
             candidate = record.message
             if candidate.role != "user" or candidate.name is not None:
                 raise SessionError("only an ordinary user message can be edited")
@@ -525,7 +528,9 @@ class WebSession:
                         else None
                     )
                 except ValueError as e:
-                    await self.ws.send_json({"type": "error", "message": f"attachment error: {e}"})
+                    await self.ws.send_json(
+                        {"type": "error", "message": f"attachment error: {e}"}
+                    )
                     await self.ws.send_json({"type": "turn_end"})
                     continue
                 if incoming is not None:
@@ -616,7 +621,7 @@ def create_app(
     attached: set[str] = set()
 
     @asynccontextmanager
-    async def lifespan(_app: FastAPI):
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         try:
             yield
         finally:
@@ -634,11 +639,15 @@ def create_app(
             raise HTTPException(status_code=401, detail="invalid or missing token")
 
     @app.websocket("/ws")
-    async def ws_endpoint(ws: WebSocket, session: str | None = None, token: str | None = None) -> None:  # pragma: no cover - exercised via TestClient
+    async def ws_endpoint(
+        ws: WebSocket, session: str | None = None, token: str | None = None
+    ) -> None:  # pragma: no cover - exercised via TestClient
         # Authenticate BEFORE accepting: reject a bad origin or missing token at
         # the handshake so an unauthorized page never opens the socket.
         page_scheme = "https" if ws.url.scheme in ("wss", "https") else "http"
-        if not _origin_ok(ws.headers.get("origin"), ws.headers.get("host"), page_scheme):
+        if not _origin_ok(
+            ws.headers.get("origin"), ws.headers.get("host"), page_scheme
+        ):
             await ws.close(code=4403)
             return
         if not _token_ok(token or ws.headers.get("x-lingchat-token")):
@@ -658,8 +667,12 @@ def create_app(
         web_session: WebSession | None = None
         try:
             web_session = WebSession(
-                ws, profile, base_dir,
-                llm_factory=llm_factory, store=store, session_id=sid,
+                ws,
+                profile,
+                base_dir,
+                llm_factory=llm_factory,
+                store=store,
+                session_id=sid,
             )
             await web_session.serve()
         except WebSocketDisconnect:
@@ -685,8 +698,12 @@ def create_app(
         }
 
     @app.get("/api/sessions/{session_id}")
-    async def get_session(session_id: str, _: None = Depends(_require_token)) -> dict[str, Any]:
-        meta = store.get(session_id) if store is not None else None
+    async def get_session(
+        session_id: str, _: None = Depends(_require_token)
+    ) -> dict[str, Any]:
+        if store is None:
+            raise HTTPException(status_code=404, detail="unknown session")
+        meta = store.get(session_id)
         if meta is None:
             raise HTTPException(status_code=404, detail="unknown session")
         display = [
@@ -706,7 +723,9 @@ def create_app(
         after: int = Query(default=-1, ge=-1),
         _: None = Depends(_require_token),
     ) -> dict[str, Any]:
-        meta = store.get(session_id) if store is not None else None
+        if store is None:
+            raise HTTPException(status_code=404, detail="unknown session")
+        meta = store.get(session_id)
         if meta is None:
             raise HTTPException(status_code=404, detail="unknown session")
         return {
@@ -746,24 +765,32 @@ def create_app(
         return forked.model_dump(mode="json")
 
     @app.delete("/api/sessions/{session_id}")
-    async def delete_session(session_id: str, _: None = Depends(_require_token)) -> dict[str, Any]:
+    async def delete_session(
+        session_id: str, _: None = Depends(_require_token)
+    ) -> dict[str, Any]:
         if store is None:
             raise HTTPException(status_code=404, detail="unknown session")
         if session_id in attached:
             # A live SessionMemory would lazily re-create the row on its next
             # append — deleting under it would just resurrect a husk.
-            raise HTTPException(status_code=409, detail="session is open in a connected tab")
+            raise HTTPException(
+                status_code=409, detail="session is open in a connected tab"
+            )
         if not store.delete(session_id):
             raise HTTPException(status_code=404, detail="unknown session")
         return {"ok": True}
 
     @app.patch("/api/sessions/{session_id}")
-    async def rename_session(session_id: str, body: _RenameBody, _: None = Depends(_require_token)) -> dict[str, Any]:
+    async def rename_session(
+        session_id: str, body: _RenameBody, _: None = Depends(_require_token)
+    ) -> dict[str, Any]:
         title = body.title.strip()
         if store is None or not title:
             raise HTTPException(
                 status_code=404 if store is None else 422,
-                detail="unknown session" if store is None else "title must not be empty",
+                detail="unknown session"
+                if store is None
+                else "title must not be empty",
             )
         try:
             meta = store.rename(session_id, title)

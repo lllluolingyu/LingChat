@@ -10,6 +10,33 @@ permissions:
   contents: read
 
 jobs:
+  quality:
+    name: Lint, format, and typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out LingCore main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: lllluolingyu/LingCore
+          ref: main
+          path: LingCore
+      - name: Check out LingChat
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: LingCore/LingChat
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+      - run: uv python install 3.13
+      - run: uv sync --locked --python 3.13
+        working-directory: LingCore/LingChat
+      - run: uv run ruff check lingchat tests
+        working-directory: LingCore/LingChat
+      - run: uv run ruff format --check lingchat tests
+        working-directory: LingCore/LingChat
+      - run: uv run mypy
+        working-directory: LingCore/LingChat
+
   test:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
@@ -18,11 +45,11 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
-      - name: Check out LingCore 0.2
+      - name: Check out LingCore main
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: lllluolingyu/LingCore
-          ref: 8a598092c01f4c6f0b8211fcef07f545d3b28bbc # LingCore 0.2.0 release commit
+          ref: main
           path: LingCore
       - name: Check out LingChat
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -44,11 +71,11 @@ jobs:
     name: Build package
     runs-on: ubuntu-latest
     steps:
-      - name: Check out LingCore 0.2
+      - name: Check out LingCore main
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: lllluolingyu/LingCore
-          ref: 8a598092c01f4c6f0b8211fcef07f545d3b28bbc # LingCore 0.2.0 release commit
+          ref: main
           path: LingCore
       - name: Check out LingChat
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

@@ -23,11 +23,7 @@ def _write_profile(tmp_path: Path) -> Path:
     ws.mkdir()
     cfg = tmp_path / "config.yaml"
     cfg.write_text(
-        "name: test\n"
-        f"workspace: {ws}\n"
-        "llm:\n"
-        "  model: fake\n"
-        "tools: []\n",
+        f"name: test\nworkspace: {ws}\nllm:\n  model: fake\ntools: []\n",
         encoding="utf-8",
     )
     return cfg

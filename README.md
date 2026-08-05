@@ -17,8 +17,9 @@ LingChat/
 
 ## Install and run
 
-LingChat 0.2 requires Python 3.11 or newer and LingCore 0.2.x. A packaged
-installation resolves the compatible core automatically:
+This checkout requires Python 3.11 or newer and supports LingCore 0.2.x and
+0.3.x (`lingcore>=0.2.0,<0.4.0`). A packaged installation resolves the
+compatible core automatically:
 
 ```bash
 pip install lingchat
@@ -85,9 +86,10 @@ This replay is completed-state replay, not detached execution: disconnecting
 still cancels and repairs an in-flight model/tool turn. Keeping a task alive
 without a browser is a separate durable-runner lifecycle.
 
-LingCore's example profiles live at its repository root (`profiles/`), outside
-the installed package, so they keep history out of the box. When a profile *can't*
-persist — it sits inside an installed package, or sets
+LingCore checkout profiles live at its repository root (`profiles/`). Its wheel
+can copy immutable templates into writable user state with
+`lingcore profile init`; either form keeps history out of the box. When a
+profile *can't* persist — it sits inside an installed package, or sets
 `sessions.enabled: false` — the sidebar stays visible and shows why instead of
 listing sessions (the reason also appears in the server log and as `notice` in
 `GET /api/sessions`).

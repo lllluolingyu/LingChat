@@ -11,11 +11,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+from lingcore.llm import LLMChunk
+from lingcore.message import Message, ToolCall
 from starlette.testclient import TestClient
 
 from lingchat.server import create_app
-from lingcore.llm import LLMChunk
-from lingcore.message import Message, ToolCall
 
 
 class FakeLLM:
@@ -66,7 +66,11 @@ def _drain_until(ws, stop_type: str) -> list[dict]:
 
 def test_hello_then_streamed_text_and_final(tmp_path):
     profile = _write_profile(tmp_path, tools=[])
-    app = create_app(profile, require_auth=False, llm_factory=lambda: FakeLLM([{"text": "Hello there!"}]))
+    app = create_app(
+        profile,
+        require_auth=False,
+        llm_factory=lambda: FakeLLM([{"text": "Hello there!"}]),
+    )
     with TestClient(app).websocket_connect("/ws") as ws:
         hello = ws.receive_json()
         assert hello["type"] == "hello"
@@ -82,7 +86,11 @@ def test_hello_then_streamed_text_and_final(tmp_path):
 def test_shell_confirm_round_trip_approved(tmp_path):
     profile = _write_profile(tmp_path, tools=["run_shell"])
     turns = [
-        {"tool_calls": [ToolCall(id="c1", name="run_shell", arguments={"command": "echo hi"})]},
+        {
+            "tool_calls": [
+                ToolCall(id="c1", name="run_shell", arguments={"command": "echo hi"})
+            ]
+        },
         {"text": "done"},
     ]
     app = create_app(profile, require_auth=False, llm_factory=lambda: FakeLLM(turns))
@@ -145,7 +153,11 @@ def test_tool_ids_pair_results_with_calls(tmp_path):
 def test_shell_confirm_round_trip_denied(tmp_path):
     profile = _write_profile(tmp_path, tools=["run_shell"])
     turns = [
-        {"tool_calls": [ToolCall(id="c1", name="run_shell", arguments={"command": "rm -rf /"})]},
+        {
+            "tool_calls": [
+                ToolCall(id="c1", name="run_shell", arguments={"command": "rm -rf /"})
+            ]
+        },
         {"text": "ok, skipped"},
     ]
     app = create_app(profile, require_auth=False, llm_factory=lambda: FakeLLM(turns))
