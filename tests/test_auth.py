@@ -131,14 +131,19 @@ def test_main_prints_bracketed_ipv6_url(monkeypatch, capsys):
 
     from lingchat.__main__ import main
 
-    app = SimpleNamespace(state=SimpleNamespace(auth_token="test-token"))
+    profile = SimpleNamespace(tools=[], tool_options={})
+    app = SimpleNamespace(
+        state=SimpleNamespace(auth_token="test-token", profile=profile)
+    )
     monkeypatch.setattr("lingchat.__main__.create_app", lambda *a, **k: app)
     monkeypatch.setattr("lingchat.__main__.uvicorn.run", lambda *a, **k: None)
 
     rc = main(["--profile", "unused", "--host", "::1"])
 
     assert rc == 0
-    assert "http://[::1]:8000/?token=test-token" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "http://[::1]:8000/?token=test-token" in output
+    assert "disabled (run_shell is not enabled)" in output
 
 
 def test_websocket_requires_token(tmp_path):

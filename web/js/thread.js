@@ -23,6 +23,7 @@ let agentName = "the agent";
 let modelName = "";
 let editHandler = null; // (seq, editedText) => boolean, injected by main.js
 let forkHandler = null; // async (seq, regenerateText?) => boolean, injected by main.js
+let attachmentDownloadHandler = null; // async (seq, index, name), injected by main.js
 
 export function setAgentIdentity(name, model) {
   agentName = name || "the agent";
@@ -35,6 +36,10 @@ export function setEditHandler(handler) {
 
 export function setForkHandler(handler) {
   forkHandler = handler;
+}
+
+export function setAttachmentDownloadHandler(handler) {
+  attachmentDownloadHandler = handler;
 }
 
 // --- scrolling ---------------------------------------------------------------
@@ -111,11 +116,19 @@ export function attachmentLabel(a) {
   return a.name || a.media_type || "attachment";
 }
 
-function renderAttachments(container, attachments = []) {
+function humanSize(value) {
+  const size = Number(value);
+  if (!Number.isFinite(size) || size < 0) return "";
+  if (size < 1024) return `${Math.round(size)} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderAttachments(container, attachments = [], seq = null) {
   if (!attachments.length) return;
   const grid = document.createElement("div");
   grid.className = "attachment-grid";
-  for (const a of attachments) {
+  attachments.forEach((a, index) => {
     const item = document.createElement("div");
     item.className = "attachment-card";
     if (a.kind === "image") {
@@ -125,23 +138,51 @@ function renderAttachments(container, attachments = []) {
       item.appendChild(img);
     } else {
       const icon = document.createElement("div");
-      icon.className = "attachment-file-icon";
-      icon.textContent = "PDF";
+      icon.className = `attachment-file-icon kind-${a.kind || "binary"}`;
+      icon.textContent = { file: "PDF", text: "TXT", binary: "BIN" }[a.kind] || "BIN";
       item.appendChild(icon);
     }
+    item.title = a.media_type || "";
     const name = document.createElement("div");
     name.className = "attachment-name";
     name.textContent = attachmentLabel(a);
     item.appendChild(name);
+    const size = humanSize(a.size);
+    if (size) {
+      const meta = document.createElement("div");
+      meta.className = "attachment-size";
+      meta.textContent = size;
+      item.appendChild(meta);
+    }
+    if (Number.isInteger(seq) && a.download === true && attachmentDownloadHandler) {
+      const download = document.createElement("button");
+      download.type = "button";
+      download.className = "attachment-download";
+      download.textContent = "Download";
+      download.addEventListener("click", async () => {
+        if (download.disabled) return;
+        download.disabled = true;
+        try {
+          await attachmentDownloadHandler(seq, index, attachmentLabel(a));
+        } catch {
+          download.textContent = "Failed";
+        } finally {
+          if (download.isConnected && download.textContent !== "Failed") {
+            download.disabled = false;
+          }
+        }
+      });
+      item.appendChild(download);
+    }
     grid.appendChild(item);
-  }
+  });
   container.appendChild(grid);
 }
 
-function renderUserBubble(bubble, text, attachments) {
+function renderUserBubble(bubble, text, attachments, seq = null) {
   bubble.textContent = "";
   bubble.appendChild(document.createTextNode(text || "Attached media"));
-  renderAttachments(bubble, attachments);
+  renderAttachments(bubble, attachments, seq);
 }
 
 function forkButton(seq, regenerateText = undefined) {
@@ -182,7 +223,7 @@ function startUserEdit(r, bubble, actions, text, attachments, seq) {
   input.rows = Math.min(8, Math.max(2, text.split("\n").length));
   input.setAttribute("aria-label", "Edit message");
   bubble.appendChild(input);
-  renderAttachments(bubble, attachments);
+  renderAttachments(bubble, attachments, seq);
 
   const editActions = document.createElement("div");
   editActions.className = "user-edit-actions";
@@ -208,7 +249,7 @@ function startUserEdit(r, bubble, actions, text, attachments, seq) {
       while (r.nextElementSibling) r.nextElementSibling.remove();
       text = edited;
     }
-    renderUserBubble(bubble, text, attachments);
+    renderUserBubble(bubble, text, attachments, seq);
     editActions.remove();
     actions.hidden = false;
     r.classList.remove("editing");
@@ -228,7 +269,7 @@ export function addUserMessage(text, attachments = [], synthetic = false, seq = 
   const r = row(synthetic ? "event" : "user");
   const bubble = document.createElement("div");
   bubble.className = synthetic ? "note system media-note" : "bubble-user";
-  renderUserBubble(bubble, text, attachments);
+  renderUserBubble(bubble, text, attachments, seq);
   r.appendChild(bubble);
   if (!synthetic && Number.isInteger(seq)) {
     r.dataset.seq = String(seq);

@@ -6,6 +6,7 @@
 // Plain ES modules, no build step: the browser loads this file directly.
 
 import {
+  api,
   connect,
   initConnection,
   resetConfirms,
@@ -39,6 +40,7 @@ import {
   isStreaming,
   resolveToolCard,
   setAgentIdentity,
+  setAttachmentDownloadHandler,
   showTyping,
   stickToBottom,
   addAgentMarkdown,
@@ -77,17 +79,20 @@ let pendingTurnNote = null;
 let pendingAttachments = [];
 let forkActive = false;
 
-const MAX_ATTACHMENTS = 4;
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-const MAX_FILE_BYTES = 10 * 1024 * 1024;
-const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
-const ALLOWED_MEDIA = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/gif",
-  "image/webp",
-  "application/pdf",
-]);
+let limits = {
+  max_attachments: 8,
+  image_max_bytes: 5 * 1024 * 1024,
+  file_max_bytes: 10 * 1024 * 1024,
+  total_max_bytes: 20 * 1024 * 1024,
+};
+
+function updateLimits(incoming) {
+  if (!incoming || typeof incoming !== "object") return;
+  for (const key of Object.keys(limits)) {
+    const value = Number(incoming[key]);
+    if (Number.isSafeInteger(value) && value > 0) limits[key] = value;
+  }
+}
 
 // --- event stream -----------------------------------------------------------
 
@@ -122,6 +127,7 @@ function reloadTranscript(note = null) {
 function handle(msg) {
   switch (msg.type) {
     case "hello": {
+      updateLimits(msg.limits);
       const agentName = msg.agent || "the agent";
       setAgentIdentity(agentName, msg.model || "");
       agentChip.textContent = `${msg.agent} · ${msg.model}`;
@@ -185,7 +191,16 @@ function handle(msg) {
       break;
     case "confirm":
       hideTyping();
-      showConfirm(msg.command, msg.id);
+      showConfirm(msg.command, msg.id, msg.allowlist_pattern, msg.runner);
+      break;
+    case "shell_allowlist":
+      if (msg.added && msg.pattern) {
+        addNote("system", `Allowed ${msg.pattern} for the rest of this session.`);
+      } else if (msg.pattern) {
+        addNote("system", `${msg.pattern} was already allowed for this session.`);
+      } else {
+        addNote("system", "That command can't be added to a session allowlist.");
+      }
       break;
     case "cancelled":
       removeStreamingMessage();
@@ -250,18 +265,59 @@ function updateSendState() {
 function mediaTypeForFile(file) {
   if (file.type) return file.type;
   const name = file.name.toLowerCase();
-  if (name.endsWith(".png")) return "image/png";
-  if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
-  if (name.endsWith(".gif")) return "image/gif";
-  if (name.endsWith(".webp")) return "image/webp";
-  if (name.endsWith(".pdf")) return "application/pdf";
+  const extensionTypes = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".pdf": "application/pdf",
+    ".txt": "text/plain",
+    ".md": "text/markdown",
+    ".csv": "text/csv",
+    ".html": "text/html",
+    ".css": "text/css",
+    ".json": "application/json",
+    ".xml": "application/xml",
+    ".js": "application/javascript",
+    ".yaml": "application/yaml",
+    ".yml": "application/yaml",
+    ".toml": "application/toml",
+    ".sh": "application/x-sh",
+  };
+  for (const [extension, mediaType] of Object.entries(extensionTypes)) {
+    if (name.endsWith(extension)) return mediaType;
+  }
   return "";
+}
+
+const TEXTUAL_APPLICATION_TYPES = new Set([
+  "application/json",
+  "application/xml",
+  "application/javascript",
+  "application/ecmascript",
+  "application/yaml",
+  "application/x-yaml",
+  "application/toml",
+  "application/x-sh",
+  "application/x-shellscript",
+]);
+
+// Cosmetic only: LingCore inspects the decoded bytes and may reclassify this.
+function displayKind(mediaType) {
+  if (mediaType.startsWith("image/")) return "image";
+  if (mediaType === "application/pdf") return "file";
+  if (mediaType.startsWith("text/") || TEXTUAL_APPLICATION_TYPES.has(mediaType)) {
+    return "text";
+  }
+  return "binary";
 }
 
 async function fileToAttachment(file) {
   const mediaType = mediaTypeForFile(file);
-  if (!ALLOWED_MEDIA.has(mediaType)) throw new Error(`unsupported file type: ${mediaType || file.name}`);
-  const limit = mediaType.startsWith("image/") ? MAX_IMAGE_BYTES : MAX_FILE_BYTES;
+  const limit = mediaType.startsWith("image/")
+    ? limits.image_max_bytes
+    : limits.file_max_bytes;
   if (file.size > limit) throw new Error(`${file.name} is too large (${file.size} bytes)`);
   const dataUrl = await new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -271,26 +327,29 @@ async function fileToAttachment(file) {
   });
   const data = dataUrl.split(",", 2)[1] || "";
   return {
-    kind: mediaType.startsWith("image/") ? "image" : "file",
+    kind: displayKind(mediaType),
     media_type: mediaType,
     data,
-    name: file.name || (mediaType === "application/pdf" ? "attachment.pdf" : "image.png"),
+    name: file.name || "attachment",
   };
 }
 
 function pendingTotalBytes() {
-  // Decoded size from base64 length (4 chars -> 3 bytes), close enough for the cap.
-  return pendingAttachments.reduce((n, a) => n + Math.floor(a.data.length * 0.75), 0);
+  return pendingAttachments.reduce((total, attachment) => {
+    const data = attachment.data || "";
+    const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+    return total + Math.floor((data.length * 3) / 4) - padding;
+  }, 0);
 }
 
 async function addFiles(files) {
   for (const file of files) {
-    if (pendingAttachments.length >= MAX_ATTACHMENTS) {
-      addNote("error", `You can attach at most ${MAX_ATTACHMENTS} files per message.`);
+    if (pendingAttachments.length >= limits.max_attachments) {
+      addNote("error", `You can attach at most ${limits.max_attachments} files per message.`);
       break;
     }
-    if (pendingTotalBytes() + file.size > MAX_TOTAL_BYTES) {
-      addNote("error", `Attachments exceed the ${Math.floor(MAX_TOTAL_BYTES / (1024 * 1024))}MB total limit per message.`);
+    if (pendingTotalBytes() + file.size > limits.total_max_bytes) {
+      addNote("error", `Attachments exceed the ${Math.floor(limits.total_max_bytes / (1024 * 1024))}MB total limit per message.`);
       break;
     }
     try {
@@ -310,8 +369,9 @@ function renderAttachmentTray() {
     const chip = document.createElement("button");
     chip.type = "button";
     chip.className = "attachment-chip";
-    chip.title = "Remove attachment";
-    chip.textContent = `${attachment.kind === "image" ? "🖼" : "📄"} ${attachmentLabel(attachment)} ×`;
+    chip.title = `${attachment.media_type || "unknown media type"} · Remove attachment`;
+    const icons = { image: "🖼", file: "📄", text: "📝", binary: "📦" };
+    chip.textContent = `${icons[attachment.kind] || "📦"} ${attachmentLabel(attachment)} ×`;
     chip.addEventListener("click", () => {
       pendingAttachments.splice(index, 1);
       renderAttachmentTray();
@@ -367,6 +427,24 @@ setForkHandler(async (seq, regenerateText = undefined) => {
   } finally {
     forkActive = false;
   }
+});
+
+setAttachmentDownloadHandler(async (seq, index, name) => {
+  const session = getSessionId();
+  if (!session) throw new Error("No stored session is active");
+  const response = await api(
+    `/api/sessions/${encodeURIComponent(session)}/messages/${seq}/attachments/${index}`,
+  );
+  if (!response.ok) throw new Error("Attachment download failed");
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = name || "attachment";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 });
 
 formEl.addEventListener("submit", (e) => {

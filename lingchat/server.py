@@ -27,13 +27,16 @@ events, cursor-based event replay, atomic prefix fork, rename, and delete.
 from __future__ import annotations
 
 import asyncio
+import base64
+import copy
 import secrets
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import aclosing, asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from fastapi import (
     Depends,
@@ -44,7 +47,8 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import FileResponse
+from fastapi import Path as PathParam
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from lingcore.agent import Agent
 from lingcore.config import AgentProfile
@@ -62,6 +66,14 @@ from lingcore.events import (
     TurnCancelled,
 )
 from lingcore.media import attachment_from_wire
+from lingcore.media_types import (
+    FILE_MAX_BYTES,
+    IMAGE_MAX_BYTES,
+    MAX_ATTACHMENTS,
+    TOTAL_ATTACHMENT_MAX_BYTES,
+    decoded_payload_size,
+    sanitize_name,
+)
 from lingcore.message import Attachment, Message, UserInput
 from lingcore.sessions import (
     SessionEvent,
@@ -70,6 +82,7 @@ from lingcore.sessions import (
     new_session_id,
     open_store,
 )
+from lingcore.tools.builtin.shell import allowlist_pattern_for
 from pydantic import BaseModel, Field, StrictInt
 
 
@@ -89,13 +102,27 @@ _WEB_DIR = _find_web_dir()
 # drive the bridge with a scripted fake, and embedders can use to inject a
 # custom backend.
 LLMFactory = Callable[[], Any]
-_MAX_ATTACHMENTS = 4
 
 
-def _attachment_payloads(attachments: list[Attachment]) -> list[dict[str, Any]]:
-    # fallback_text is a model-facing stand-in (extracted PDF text / a vision
-    # description, up to tens of KB) — the browser renders the original media.
-    return [a.model_dump(exclude={"fallback_text"}) for a in attachments]
+def _attachment_payloads(
+    attachments: list[Attachment], *, downloadable: bool = False
+) -> list[dict[str, Any]]:
+    """Return safe browser metadata for attachments.
+
+    ``fallback_text`` is always model-only. Images retain their validated base64
+    bytes for inline previews; every other kind omits ``data`` and is fetched as
+    an authenticated download only after it has a stored message sequence.
+    """
+    payloads: list[dict[str, Any]] = []
+    for attachment in attachments:
+        excluded = {"fallback_text"}
+        if attachment.kind != "image":
+            excluded.add("data")
+        payload = attachment.model_dump(exclude=excluded)
+        payload["size"] = decoded_payload_size(attachment.data)
+        payload["download"] = downloadable
+        payloads.append(payload)
+    return payloads
 
 
 def _validate_attachments(raw: object) -> list[Attachment]:
@@ -103,8 +130,8 @@ def _validate_attachments(raw: object) -> list[Attachment]:
         return []
     if not isinstance(raw, list):
         raise ValueError("attachments must be a list")
-    if len(raw) > _MAX_ATTACHMENTS:
-        raise ValueError(f"too many attachments ({len(raw)}; limit {_MAX_ATTACHMENTS})")
+    if len(raw) > MAX_ATTACHMENTS:
+        raise ValueError(f"too many attachments ({len(raw)}; limit {MAX_ATTACHMENTS})")
     out: list[Attachment] = []
     for item in raw:
         try:
@@ -176,7 +203,7 @@ def _stored_to_display(seq: int, m: Message) -> dict[str, Any]:
             "role": "user",
             "text": m.input_text if m.input_text is not None else m.content,
             "name": m.name,
-            "attachments": _attachment_payloads(m.attachments),
+            "attachments": _attachment_payloads(m.attachments, downloadable=True),
         }
     if m.role == "assistant":
         return {
@@ -260,6 +287,41 @@ class _ForkBody(BaseModel):
     title: str | None = None
 
 
+@dataclass(slots=True)
+class _PendingConfirm:
+    future: asyncio.Future[bool]
+    command: str
+
+
+def shell_runner_label(tool_options: Mapping[str, Any]) -> str:
+    """Describe the selected runner from raw, cross-version profile options.
+
+    LingCore 0.2.x does not expose ``lingcore.sandbox``, so LingChat deliberately
+    avoids importing sandbox models and reads only the stable options mapping.
+    """
+    run_shell = tool_options.get("run_shell")
+    if not isinstance(run_shell, Mapping):
+        return "host (unsandboxed)"
+    sandbox = run_shell.get("sandbox")
+    if not isinstance(sandbox, Mapping):
+        return "host (unsandboxed)"
+    backend = sandbox.get("backend")
+    if backend == "bubblewrap":
+        return "bubblewrap"
+    if backend == "oci":
+        runtime = sandbox.get("runtime")
+        return f"oci: {runtime}" if runtime in {"docker", "podman"} else "oci"
+    return "host (unsandboxed)"
+
+
+def _content_disposition(name: str | None) -> str:
+    safe = sanitize_name(name, fallback="attachment")
+    fallback = safe.encode("ascii", errors="replace").decode("ascii")
+    fallback = fallback.replace("\\", "\\\\").replace('"', '\\"')
+    encoded = quote(safe, safe="")
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
+
+
 class WebSession:
     """One browser connection: owns an Agent and bridges it to the socket."""
 
@@ -276,16 +338,19 @@ class WebSession:
         self.profile = profile
         self._base_dir = base_dir
         self._llm_factory = llm_factory
-        # Per-connection tool_options dict so a future "allow always" stays
-        # isolated to this session (mirrors the CLI composition root).
-        self._tool_options = dict(profile.tool_options)
+        # Per-connection mutable options: nested run_shell allowlists must never
+        # leak through the shared profile into another browser connection.
+        # Copy only here, before Agent.from_profile injects live non-copyable
+        # skill state and memory summarizers into this dict.
+        self._tool_options = copy.deepcopy(profile.tool_options)
         self._store = store
         self._session_id = session_id
         self.agent = self._build_agent()
         # One future per in-flight confirmation, keyed by a generated id, so two
         # simultaneous tool calls (parallel_tools) each get their own round-trip
         # and an approval is never misrouted to the wrong command.
-        self._pending_confirms: dict[str, asyncio.Future[bool]] = {}
+        self._pending_confirms: dict[str, _PendingConfirm] = {}
+        self._turn_shell_commands: set[str] = set()
         self._run_lock = asyncio.Lock()
         # Exactly one turn may be active. This makes Stop deterministic and
         # rejects accidental double-submits instead of silently queueing them.
@@ -316,24 +381,62 @@ class WebSession:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[bool] = loop.create_future()
         cid = uuid.uuid4().hex
-        self._pending_confirms[cid] = fut
-        await self.ws.send_json({"type": "confirm", "id": cid, "command": command})
+        self._pending_confirms[cid] = _PendingConfirm(future=fut, command=command)
+        pattern = self._allowlist_pattern(command)
+        message: dict[str, Any] = {
+            "type": "confirm",
+            "id": cid,
+            "command": command,
+            "runner": shell_runner_label(self._tool_options),
+        }
+        if pattern is not None:
+            message["allowlist_pattern"] = pattern
+        await self.ws.send_json(message)
         try:
             return await fut
         finally:
             self._pending_confirms.pop(cid, None)
 
-    def _resolve_confirm(self, cid: str | None, approved: bool) -> None:
-        """Resolve a pending confirmation by id (or the sole one if no id)."""
+    def _allowlist_pattern(self, command: str) -> str | None:
+        if command not in self._turn_shell_commands:
+            return None
+        pattern = allowlist_pattern_for(command)
+        return pattern or None
+
+    def _pending_confirm(self, cid: str | None) -> _PendingConfirm | None:
+        """Find a prompt by id, retaining the legacy sole-prompt fallback."""
         if cid is None:
-            # Back-compat / single-prompt case: resolve the only pending confirm.
-            if len(self._pending_confirms) == 1:
-                cid = next(iter(self._pending_confirms))
-            else:
-                return
-        fut = self._pending_confirms.get(cid)
-        if fut is not None and not fut.done():
-            fut.set_result(approved)
+            if len(self._pending_confirms) != 1:
+                return None
+            cid = next(iter(self._pending_confirms))
+        return self._pending_confirms.get(cid)
+
+    async def _resolve_confirm(
+        self, cid: str | None, approved: bool, scope: object = "once"
+    ) -> None:
+        """Resolve a pending confirmation by id (or the sole one if no id)."""
+        pending = self._pending_confirm(cid)
+        if pending is None or pending.future.done():
+            return
+        if approved and scope == "session":
+            pattern = self._allowlist_pattern(pending.command)
+            added = False
+            if pattern is not None:
+                raw_options = self._tool_options.get("run_shell")
+                if not isinstance(raw_options, dict):
+                    raw_options = {}
+                    self._tool_options["run_shell"] = raw_options
+                patterns = raw_options.get("allow_patterns")
+                if not isinstance(patterns, list):
+                    patterns = []
+                    raw_options["allow_patterns"] = patterns
+                if pattern not in patterns:
+                    patterns.append(pattern)
+                    added = True
+            await self._safe_send(
+                {"type": "shell_allowlist", "pattern": pattern, "added": added}
+            )
+        pending.future.set_result(approved)
 
     def spawn_turn(self, incoming: UserInput) -> bool:
         """Launch one turn, refusing to queue behind an active turn."""
@@ -395,6 +498,7 @@ class WebSession:
     async def _run_turn(self, incoming: UserInput) -> None:
         # Serialize turns so one connection's runs share memory safely.
         async with self._run_lock:
+            self._turn_shell_commands.clear()
             turn = self.agent.run(incoming)
             try:
                 # A failure in the loop body does not make ``async for`` close
@@ -403,6 +507,13 @@ class WebSession:
                 # task exits, rather than leaving cleanup to asyncgen GC.
                 async with aclosing(turn):
                     async for event in turn:
+                        if (
+                            isinstance(event, ToolCallStarted)
+                            and event.call.name == "run_shell"
+                        ):
+                            command = event.call.arguments.get("command")
+                            if isinstance(command, str):
+                                self._turn_shell_commands.add(command)
                         if isinstance(event, (Final, Error)):
                             self._turn_terminal = True
                         await self.ws.send_json(_event_to_msg(event))
@@ -499,6 +610,12 @@ class WebSession:
                 "workspace": str(self.agent.tool_ctx.workspace),
                 "session": self._session_id,
                 "title": title,
+                "limits": {
+                    "max_attachments": MAX_ATTACHMENTS,
+                    "image_max_bytes": IMAGE_MAX_BYTES,
+                    "file_max_bytes": FILE_MAX_BYTES,
+                    "total_max_bytes": TOTAL_ATTACHMENT_MAX_BYTES,
+                },
                 "event_cursor": (
                     self._store.event_cursor(self._session_id)
                     if self._store is not None and self._session_id is not None
@@ -549,7 +666,11 @@ class WebSession:
                 # Confirmation is a security boundary: only the literal JSON
                 # boolean true approves. Strings/numbers/missing values fail
                 # closed instead of inheriting Python truthiness.
-                self._resolve_confirm(raw_id, msg.get("approved") is True)
+                await self._resolve_confirm(
+                    raw_id,
+                    msg.get("approved") is True,
+                    msg.get("scope", "once"),
+                )
 
 
 def create_app(
@@ -630,6 +751,7 @@ def create_app(
 
     app = FastAPI(title="LingChat", lifespan=lifespan)
     app.state.auth_token = token
+    app.state.profile = profile
 
     async def _require_token(
         x_lingchat_token: str | None = Header(default=None),
@@ -716,6 +838,38 @@ def create_app(
             "events": _replay_events(store, session_id),
             "event_cursor": store.event_cursor(session_id),
         }
+
+    @app.get("/api/sessions/{session_id}/messages/{seq}/attachments/{index}")
+    async def download_attachment(
+        session_id: str,
+        seq: int,
+        index: int = PathParam(ge=0),
+        _: None = Depends(_require_token),
+    ) -> Response:
+        if store is None or store.get(session_id) is None:
+            raise HTTPException(status_code=404, detail="attachment not found")
+        record = next(
+            (item for item in store.message_records(session_id) if item.seq == seq),
+            None,
+        )
+        if record is None or index >= len(record.message.attachments):
+            raise HTTPException(status_code=404, detail="attachment not found")
+        attachment = record.message.attachments[index]
+        try:
+            data = base64.b64decode(attachment.data, validate=True)
+        except ValueError:
+            raise HTTPException(
+                status_code=404, detail="attachment not found"
+            ) from None
+        return Response(
+            content=data,
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": _content_disposition(attachment.name),
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "no-store",
+            },
+        )
 
     @app.get("/api/sessions/{session_id}/events")
     async def replay_session_events(

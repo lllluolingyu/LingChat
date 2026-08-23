@@ -73,6 +73,32 @@ def test_stop_edit_and_fork_controls_are_wired():
     assert "WebSocket.CONNECTING" in connection
 
 
+def test_attachment_and_confirmation_parity_controls_are_wired():
+    index = (_WEB_DIR / "index.html").read_text(encoding="utf-8")
+    connection = (_WEB_DIR / "js" / "connection.js").read_text(encoding="utf-8")
+    main = (_WEB_DIR / "js" / "main.js").read_text(encoding="utf-8")
+    thread = (_WEB_DIR / "js" / "thread.js").read_text(encoding="utf-8")
+
+    file_input = re.search(r'<input\b[^>]*\bid="file-input"[^>]*>', index)
+    assert file_input is not None
+    assert "accept=" not in file_input.group(0)
+    assert 'id="confirm-allow-session"' in index
+    assert 'id="confirm-runner"' in index
+
+    assert "msg.limits" in main
+    assert 'case "shell_allowlist"' in main
+    assert "displayKind" in main
+    assert "id: item.id, approved, scope" in connection
+    assert 'answerConfirm(true, "session")' in connection
+    assert "msg.allowlist_pattern" in main
+    assert "runner" in connection
+
+    assert 'text: "TXT"' in thread
+    assert 'binary: "BIN"' in thread
+    assert "attachment-download" in thread
+    assert "attachmentDownloadHandler" in thread
+
+
 def test_durable_runtime_events_are_replayed_with_history():
     sessions = (_WEB_DIR / "js" / "sessions.js").read_text(encoding="utf-8")
 

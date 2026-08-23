@@ -5,12 +5,29 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- Arbitrary image, PDF, text, and binary browser attachments, with limits
+  sourced from LingCore and support for up to eight files per message.
+- Per-connection shell token-prefix allowlisting from eligible confirmation
+  prompts, without persisting or sharing approvals between browser sessions.
+- Authenticated, forced-download access to stored attachment bytes.
+
 ### Changed
 
 - Compatibility now covers `lingcore>=0.2.0,<0.4.0`, including the upcoming
   LingCore 0.3 line.
 - CI tests against LingCore `main` instead of the 0.2.0 release commit, and now
   enforces Ruff lint/format plus package-wide mypy checks.
+- Transcript responses omit non-image base64 payloads and expose bounded size
+  and download metadata instead.
+- Startup, confirmation, and security documentation now identify the selected
+  host, Bubblewrap, or OCI shell runner.
+
+### Fixed
+
+- Browser connections deep-copy nested tool options so a session allowlist can
+  never leak into another connection through the shared profile.
 
 ## [0.2.0] - 2026-07-20
 

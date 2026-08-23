@@ -17,7 +17,9 @@ const statusText = $("status-text");
 const connBanner = $("conn-banner");
 const confirmEl = $("confirm");
 const confirmCmd = $("confirm-cmd");
+const confirmRunner = $("confirm-runner");
 const confirmAllow = $("confirm-allow");
+const confirmAllowSession = $("confirm-allow-session");
 const confirmDeny = $("confirm-deny");
 
 // Per-launch auth token: taken from the page URL (?token=...) the server
@@ -188,10 +190,10 @@ export function suspendReconnect() {
 // Confirmations are queued: parallel tool calls can request several at once,
 // each with its own id, and we resolve them one modal at a time by id so an
 // approval is never misrouted to the wrong command.
-let confirmQueue = []; // [{command, id}]
+let confirmQueue = []; // [{command, id, pattern, runner}]
 
-export function showConfirm(command, id) {
-  confirmQueue.push({ command, id });
+export function showConfirm(command, id, pattern = null, runner = "") {
+  confirmQueue.push({ command, id, pattern, runner });
   if (confirmQueue.length === 1) renderConfirm();
 }
 
@@ -202,13 +204,19 @@ function renderConfirm() {
     return;
   }
   confirmCmd.textContent = item.command;
+  confirmRunner.textContent = item.runner ? `Runner: ${item.runner}` : "";
+  confirmRunner.hidden = !item.runner;
+  confirmAllowSession.hidden = !item.pattern;
+  confirmAllowSession.textContent = item.pattern
+    ? `Allow ${item.pattern} this session`
+    : "Allow always this session";
   confirmEl.classList.remove("hidden");
   confirmDeny.focus(); // safe default for a stray Enter
 }
 
-function answerConfirm(approved) {
+function answerConfirm(approved, scope = "once") {
   const item = confirmQueue.shift();
-  if (item) wsSend({ type: "confirm_response", id: item.id, approved });
+  if (item) wsSend({ type: "confirm_response", id: item.id, approved, scope });
   if (confirmQueue.length) {
     renderConfirm();
   } else {
@@ -223,6 +231,7 @@ export function resetConfirms() {
 }
 
 confirmAllow.addEventListener("click", () => answerConfirm(true));
+confirmAllowSession.addEventListener("click", () => answerConfirm(true, "session"));
 confirmDeny.addEventListener("click", () => answerConfirm(false));
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !confirmEl.classList.contains("hidden")) {

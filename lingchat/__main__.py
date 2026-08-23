@@ -3,8 +3,8 @@
 Composition root for the web frontend: parse args, build the FastAPI app for
 the chosen profile, and launch uvicorn. Binds to 127.0.0.1 by default — the
 agent can run shell commands, so exposing this port is remote code execution.
-Prefer a profile without ``run_shell``; actual containment requires isolation
-outside LingChat.
+Profiles can contain approved commands with LingCore's Bubblewrap or OCI shell
+sandbox, but that OS boundary never replaces LingChat's network boundary.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import sys
 import uvicorn
 from lingcore.errors import LingCoreError
 
-from lingchat.server import create_app
+from lingchat.server import create_app, shell_runner_label
 
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
@@ -54,7 +54,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Explicitly allow binding to a non-loopback host. Anyone who can "
         "reach the port and token gets everything the agent can do — for a "
         "shell-enabled profile that is remote code execution. Put TLS and "
-        "network controls in front, and prefer a profile without run_shell.",
+        "network controls in front. A configured shell sandbox contains "
+        "approved commands but does not replace this network boundary.",
     )
     parser.add_argument(
         "--port", type=int, default=8000, help="Port to bind (default 8000)."
@@ -81,11 +82,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: failed to start LingChat: {exc}", file=sys.stderr)
         return 2
     token = app.state.auth_token
+    profile = app.state.profile
+    if "run_shell" not in profile.tools:
+        print("Shell execution: disabled (run_shell is not enabled).")
+    else:
+        runner = shell_runner_label(profile.tool_options)
+        suffix = " — no OS boundary" if runner == "host (unsandboxed)" else ""
+        print(f"Shell execution: {runner}{suffix}.")
     if args.host not in _LOOPBACK_HOSTS:
         print(
             f"WARNING: binding to {args.host} exposes an agent that can run shell "
-            "commands — this is remote code execution. Prefer a profile without "
-            "run_shell; actual containment requires external isolation.",
+            "commands — this is remote code execution. A shell sandbox does not "
+            "replace TLS, authentication, and network access controls.",
         )
     # Print the URL carrying the per-launch auth token: the browser authenticates
     # with it, and requests without it (or from another origin) are refused.

@@ -47,6 +47,29 @@ Without `-w` the agent works in the profile's own `workspace/` directory
 IPv6 literals are passed raw to `--host` (for example `::1`); the printed
 browser URL adds the required brackets automatically.
 
+A profile-selected guardrail (`guardrail.policy`, including its constructor
+options) applies to LingChat exactly as it does to LingCore's terminal frontend.
+
+## Attachments
+
+The browser accepts any file, up to 8 attachments and 20 MiB decoded data per
+message. Images are limited to 5 MiB each; PDFs, text, and binary files are
+limited to 10 MiB each. LingCore inspects the bytes and authoritatively assigns
+one of four kinds:
+
+- `image` and PDF `file` attachments can reach a model as native media when its
+  profile declares that modality.
+- `text` attachments are copied into the workspace and their UTF-8 content is
+  inlined into the prompt within LingCore's text budget.
+- `binary` attachments are copied into the workspace and represented to the
+  model by a pointer so workspace tools can inspect them.
+
+Every accepted file is stored under the profile workspace's `attachments/`
+directory. Stored non-image transcript payloads are downloaded through an
+authenticated endpoint instead of being embedded in history responses. PDF to
+text degradation for a model without native PDF support requires the optional
+`lingcore[pdf]` extra.
+
 ## Sessions
 
 Conversations persist through lingcore's session store (`sessions.db` in the
@@ -109,8 +132,20 @@ omit `through_seq` to copy the full transcript),
 The agent may run shell commands, so **the server binds to `127.0.0.1` and
 refuses any other host unless `--allow-remote` is given**. Exposing the port to
 a network is remote code execution for a shell-enabled profile. If you must,
-put TLS and network controls in front, prefer a profile without `run_shell`,
-and even then treat it as trusted-local only.
+put TLS and network controls in front and treat it as trusted-local only.
+
+Shell-enabled profiles may select LingCore's strict, fail-closed Bubblewrap or
+Docker/Podman OCI runner through `tool_options.run_shell.sandbox`; see
+[LingCore's sandboxing guide](https://github.com/lllluolingyu/LingCore/blob/main/docs/sandboxing.md).
+LingChat names the selected runner at startup, in every confirmation dialog,
+and in the shell result header. A profile without a sandbox block uses the
+`host (unsandboxed)` runner. Sandboxing bounds an approved command's OS access;
+it is not a substitute for the network boundary or for user confirmation.
+
+An eligible simple shell command can be allowed for the rest of the current
+browser connection. These token-prefix allowlists are connection-local, are
+never persisted, and do not cross tabs or reconnects. Commands containing shell
+control syntax cannot be added to the allowlist.
 
 Every protected `/api` request and WebSocket handshake is authenticated with
 the per-launch token printed at startup (`?token=...` on the initial URL and
@@ -123,21 +158,36 @@ browser must also match the server's full origin (scheme and authority).
 
 Connect with `ws://host/ws?token=<launch-token>&session=<id>` to resume a stored
 session (omit `session` for a fresh one; the `hello` reply carries the
-authoritative id and current `event_cursor`). REST calls send the same token in
-`X-LingChat-Token`.
+authoritative id, current `event_cursor`, and a `limits` object sourced from
+LingCore's attachment constants, with `max_attachments`, `image_max_bytes`,
+`file_max_bytes`, and `total_max_bytes` fields). REST calls send the same token
+in `X-LingChat-Token`.
 Client → server: `{type:"user", text, attachments?}`, `{type:"stop"}`,
-`{type:"edit", seq, text}`, and `{type:"confirm_response", id, approved}`.
+`{type:"edit", seq, text}`, and
+`{type:"confirm_response", id, approved, scope?:"once"|"session"}`.
 The edit `seq` is the stable sequence returned on each message by
 `GET /api/sessions/{id}`; the confirmation `id` echoes the corresponding server
 `confirm` message so parallel confirmations cannot be crossed. Only the literal
 JSON boolean `true` approves a confirmation; malformed or missing values deny.
+Confirm frames carry the shell `runner` and, only for an eligible in-flight
+`run_shell` call, an `allowlist_pattern`. The server recomputes that pattern
+from its stored command and ignores any client-supplied pattern.
 
 Server → client: `hello` (incl. `session`, `title`, `event_cursor`), `session_busy`,
 `turn_busy`, `text`, `tool_call`, `tool_result`, `skill`, `compact`,
-`stream_retry`, `confirm`, `cancelled`, `stop_ignored`, `edit_accepted`,
+`stream_retry`, `confirm`, `shell_allowlist`, `cancelled`, `stop_ignored`, `edit_accepted`,
 `edit_rejected`, `final`, `error`, and `turn_end` (see
 `lingchat/server.py:_event_to_msg`). A successful Stop or Edit regeneration ends
 with `turn_end`; a rejected edit and an ignored stop are standalone replies.
+`shell_allowlist` carries the server-derived `pattern` (or `null` when none is
+safe) and an `added` boolean.
+
+Transcript attachments carry `size` and `download`; `data` is omitted for every
+kind except images, whose bytes remain inline for previews. Stored bytes are
+available at
+`GET /api/sessions/{id}/messages/{seq}/attachments/{index}` with the same auth
+header. Downloads are always served as `application/octet-stream` with an
+attachment disposition, `nosniff`, and `no-store`.
 
 ## Test
 
