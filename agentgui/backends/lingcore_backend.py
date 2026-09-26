@@ -155,13 +155,28 @@ class LingCoreBackend(BackendBase):
         profile, self.native = self.cache.get(session.options["profile"])
         self.profile = profile.model_copy(deep=True)
         self.profile.workspace = session.workspace
-        if session.autonomy == "read-only":
-            # A narrow ceiling prevents dynamic skills from granting write/code tools.
-            safe = {"read_file", "list_dir", "search", "web_search", "fetch_url"}
+        if session.autonomy == "ask":
+            # LingCore has no per-write approval hook: ``ctx.confirm`` is reached
+            # only from run_shell, skill gating and subagent spawn, never from
+            # write_file/edit_file/patch_file. So "ask before writing" has to be a
+            # tool ceiling, with run_shell kept as the one approvable way to act.
+            safe = {
+                "read_file",
+                "list_dir",
+                "search",
+                "web_search",
+                "fetch_url",
+                "run_shell",
+            }
             self.profile.tools = [name for name in self.profile.tools if name in safe]
+            # Skills stay: ``SkillState.effective_tools`` is ceiling ∩ requested, so
+            # no skill can grant past the list above, and this is the default mode.
+            # ``initial_tools`` is taken verbatim when set, so clear it to mean "the
+            # whole filtered ceiling"; clearing ``skill_gated_tools`` overrides
+            # profile intent deliberately, since a profile that gates run_shell
+            # behind a skill would otherwise leave this mode no way to act at all.
             self.profile.initial_tools = None
             self.profile.skill_gated_tools = []
-            self.profile.skills = []
         self.options = copy.deepcopy(self.profile.tool_options)
         if "run_shell" in self.profile.tools:
             self.options.setdefault("run_shell", {})["require_confirmation"] = True
@@ -191,8 +206,8 @@ class LingCoreBackend(BackendBase):
         )
 
     async def confirm(self, prompt: str) -> bool:
-        if self.session.autonomy == "read-only":
-            return False
+        # No level refuses on the user's behalf any more: under ``ask`` the empty
+        # allow-list means every command arrives here for them to decide.
         shell = prompt in self.shell_commands
         pattern = allowlist_pattern_for(prompt) if shell else None
         answer = await self.approve(

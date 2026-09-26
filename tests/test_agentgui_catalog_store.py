@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agentgui.catalog import Catalog
+from agentgui.catalog import Catalog, ModelEntry
 from agentgui.store import Store
 
 
@@ -53,3 +53,34 @@ def test_store_coalesces_consecutive_deltas(tmp_path: Path):
         {"type": "text", "delta": "!"},
     ]
     store.close()
+
+
+def test_legacy_autonomy_rows_are_renamed_on_open(tmp_path: Path):
+    """Left alone, a legacy row would not error -- it would quietly get more.
+
+    Codex and LingCore compare autonomy with ``==`` and fall through to their
+    permissive branch, so an unrenamed ``read-only`` row would earn a
+    workspace-write sandbox. Only Claude would fail loudly.
+    """
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = Store(tmp_path / "gui.db")
+    entry = ModelEntry("codex", "Codex", "codex")
+    stale = store.create(entry, str(workspace), "ask")
+    modern = store.create(entry, str(workspace), "edit")
+    with store.db:
+        store.db.execute(
+            "UPDATE sessions SET autonomy = 'read-only' WHERE id = ?", (stale.id,)
+        )
+        store.db.execute(
+            "UPDATE sessions SET autonomy = 'auto-edit' WHERE id = ?", (modern.id,)
+        )
+    store.close()
+
+    store = Store(tmp_path / "gui.db")
+    try:
+        assert store.get(stale.id).autonomy == "ask"
+        assert store.get(modern.id).autonomy == "edit"
+    finally:
+        store.close()

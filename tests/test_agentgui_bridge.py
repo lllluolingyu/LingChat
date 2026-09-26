@@ -228,7 +228,15 @@ async def test_attachments_validation_and_private_download(app_factory):
         assert (await ws.until("turn_end"))[0]["type"] == "error"
 
 
-async def test_read_only_cannot_write_or_run_shell(app_factory):
+async def test_ask_offers_no_direct_write_tool(app_factory):
+    """LingCore cannot approve an individual write, so `ask` withholds the tool.
+
+    `ctx.confirm` is reachable from run_shell, skill gating and subagent spawn
+    only -- never from write_file -- so the ceiling is the only way this backend
+    can promise that nothing is written without the user agreeing to it. An
+    approved shell command remains the way to act.
+    """
+
     app, rec, _ = app_factory(
         [
             {
@@ -243,7 +251,7 @@ async def test_read_only_cannot_write_or_run_shell(app_factory):
             {"text": "denied"},
         ],
         ["write_file", "run_shell", "read_file"],
-        "read-only",
+        "ask",
     )
     async with Socket(app, rec.id) as ws:
         await ws.recv()
@@ -251,3 +259,30 @@ async def test_read_only_cannot_write_or_run_shell(app_factory):
         frames = await ws.until("turn_end")
         assert next(f for f in frames if f["type"] == "tool_result")["ok"] is False
         assert not (Path(rec.workspace) / "bad.txt").exists()
+
+
+async def test_edit_writes_the_workspace_without_asking(app_factory):
+    app, rec, _ = app_factory(
+        [
+            {
+                "tool_calls": [
+                    ToolCall(
+                        id="write",
+                        name="write_file",
+                        arguments={"path": "good.txt", "content": "good"},
+                    )
+                ]
+            },
+            {"text": "written"},
+        ],
+        ["write_file", "run_shell", "read_file"],
+        "edit",
+    )
+    async with Socket(app, rec.id) as ws:
+        await ws.recv()
+        await ws.send({"type": "user", "text": "write"})
+        frames = await ws.until("turn_end")
+        assert next(f for f in frames if f["type"] == "tool_result")["ok"] is True
+        # No approval frame: that is what distinguishes this level from `ask`.
+        assert not [f for f in frames if f["type"] == "approval"]
+        assert (Path(rec.workspace) / "good.txt").read_text() == "good"

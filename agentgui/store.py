@@ -10,7 +10,7 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, get_args
 from uuid import uuid4
 
 from .catalog import ModelEntry
@@ -30,13 +30,25 @@ def state_path() -> Path:
     )
 
 
+# What the agent may do *without* asking. ``ask`` reads freely and raises an
+# approval for every write or command; ``edit`` writes inside the workspace
+# silently and still asks to step outside it. Consumers import these rather than
+# copying the values, so a level cannot be accepted by one layer and rejected by
+# the next -- typing a request model with ``Autonomy`` earns the rejection for
+# free, and ``get_args`` keeps the runtime set from drifting from the type.
+Autonomy = Literal["ask", "edit"]
+AUTONOMY_LEVELS: frozenset[str] = frozenset(get_args(Autonomy))
+
+
 @dataclass
 class SessionRecord:
     id: str
     backend: str
     model_id: str
     workspace: str
-    autonomy: str
+    # True by construction, not by enforcement: ``_session`` hydrates rows
+    # unvalidated, so the DDL rename above is what keeps old rows honest.
+    autonomy: Autonomy
     title: str
     native_id: str | None
     parent_id: str | None
@@ -92,6 +104,12 @@ class Store:
                 created_at TEXT NOT NULL, PRIMARY KEY(session_id, seq)
             );
             DROP TABLE IF EXISTS wire_events;
+            -- Rows predating the two-level model. Renaming them is not cosmetic:
+            -- the backends test autonomy with ``==`` and fall through to their
+            -- permissive branch, so an unrenamed ``read-only`` row would quietly
+            -- earn a workspace-write sandbox instead of erroring.
+            UPDATE sessions SET autonomy = 'ask' WHERE autonomy = 'read-only';
+            UPDATE sessions SET autonomy = 'edit' WHERE autonomy = 'auto-edit';
         """)
 
     def close(self) -> None:
@@ -101,7 +119,7 @@ class Store:
         self,
         entry: ModelEntry,
         workspace: str,
-        autonomy: str = "ask",
+        autonomy: Autonomy = "ask",
         *,
         native_id: str | None = None,
         parent_id: str | None = None,
@@ -110,7 +128,7 @@ class Store:
         root = Path(workspace).expanduser().resolve()
         if not root.is_dir():
             raise ValueError("workspace must be an existing directory")
-        if autonomy not in {"read-only", "ask", "auto-edit"}:
+        if autonomy not in AUTONOMY_LEVELS:
             raise ValueError("invalid autonomy level")
         stamp = now()
         rec = SessionRecord(

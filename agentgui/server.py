@@ -40,7 +40,7 @@ from .backends.lingcore_backend import LingCoreBackend, ProfileCache
 from .catalog import Catalog
 from .diagnostics import doctor, live_models
 from .protocol import ApprovalRequest, Decision, Frame, decision, frame
-from .store import SessionRecord, Store
+from .store import Autonomy, SessionRecord, Store
 
 BackendFactory = Callable[[SessionRecord, Store, ProfileCache], AgentBackend]
 _WEB_DIR = Path(__file__).with_name("web")
@@ -51,7 +51,8 @@ _DELTA_FLUSH_SECONDS = 1.0
 class SessionCreate(BaseModel):
     model_id: str
     workspace: str
-    autonomy: str = "ask"
+    # Typed, so an unknown level is a 422 from pydantic before the store is asked.
+    autonomy: Autonomy = "ask"
 
 
 class RenameBody(BaseModel):

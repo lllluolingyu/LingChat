@@ -12,7 +12,7 @@ from agentgui.backends.base import UserTurn
 from agentgui.backends.codex_backend import CodexBackend
 from agentgui.catalog import ModelEntry
 from agentgui.diagnostics import CODEX_SCHEMA_VERSION
-from agentgui.store import Store
+from agentgui.store import AUTONOMY_LEVELS, Store
 
 FIXTURE = Path(__file__).parent / "agentgui_fakes/fake_codex_appserver.py"
 SCHEMA = Path(__file__).parent / "fixtures/codex-schema"
@@ -56,7 +56,7 @@ def test_schema_fixture_matches_supported_version():
     assert (SCHEMA / "VERSION").read_text().strip() == CODEX_SCHEMA_VERSION
 
 
-@pytest.mark.parametrize("autonomy", ["read-only", "ask", "auto-edit"])
+@pytest.mark.parametrize("autonomy", sorted(AUTONOMY_LEVELS))
 async def test_codex_requests_match_checked_in_schema(tmp_path, monkeypatch, autonomy):
     log = tmp_path / "codex.jsonl"
     monkeypatch.setenv("FAKE_CODEX_LOG", str(log))
@@ -98,3 +98,42 @@ async def test_codex_requests_match_checked_in_schema(tmp_path, monkeypatch, aut
     for message in sent:
         if message.get("method") in PARAMS:
             validate(PARAMS[message["method"]], message["params"])
+    # Pin the level to the sandbox it buys. Only the sandbox separates the two:
+    # `edit` still asks to leave the workspace, so the policy never varies.
+    expected = "read-only" if autonomy == "ask" else "workspace-write"
+    for message in sent:
+        if message.get("method") in PARAMS and "sandbox" in message["params"]:
+            assert message["params"]["sandbox"] == expected, message["method"]
+            assert message["params"]["approvalPolicy"] == "on-request"
+
+
+async def test_ask_routes_a_file_change_to_the_user(tmp_path: Path):
+    """`ask` runs read-only, so this request is how a write gets granted at all.
+
+    It used to be auto-declined, which combined with the read-only sandbox left
+    no way to approve a write without changing the session's level.
+    """
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = Store(tmp_path / "gui.db")
+    session = store.create(ModelEntry("codex", "Codex", "codex"), str(workspace), "ask")
+    backend = CodexBackend(store, [sys.executable, str(FIXTURE.resolve())])
+    try:
+        await backend.start(session, deny)
+        asked = []
+
+        async def approve(request):
+            asked.append(request.kind)
+            return "once"
+
+        backend.approve = approve
+        result = await backend._request(
+            "item/fileChange/requestApproval",
+            {"threadId": session.native_id, "itemId": "item"},
+        )
+    finally:
+        await backend.close()
+        store.close()
+    assert asked == ["edit"]
+    assert result == {"decision": "accept"}

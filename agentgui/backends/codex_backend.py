@@ -34,12 +34,14 @@ class CodexBackend(BackendBase):
         return {
             "cwd": self.session.workspace,
             "model": self.session.native_model or None,
-            "approvalPolicy": "never"
-            if self.session.autonomy == "auto-edit"
-            else "on-request",
+            # Always on-request: the sandbox alone separates the two levels, so
+            # leaving the workspace asks under `edit` too. `never` is deliberately
+            # unreachable — it gave Codex a higher ceiling than Claude's
+            # `acceptEdits` under the same name.
+            "approvalPolicy": "on-request",
             "approvalsReviewer": "user",
             "sandbox": "read-only"
-            if self.session.autonomy == "read-only"
+            if self.session.autonomy == "ask"
             else "workspace-write",
         }
 
@@ -88,11 +90,9 @@ class CodexBackend(BackendBase):
             "item/fileChange/requestApproval",
         }:
             raise ValueError(f"unsupported server request: {method}")
-        if (
-            self.session.autonomy == "read-only"
-            and method == "item/fileChange/requestApproval"
-        ):
-            return {"decision": "decline"}
+        # File changes are no longer auto-declined. Under `ask` the sandbox is
+        # read-only, so this request *is* how a write reaches the user for
+        # approval; declining it here would make writes impossible to grant.
         kind = "shell" if "commandExecution" in method else "edit"
         item = self.items.get(params.get("itemId", ""), {})
         diff = (

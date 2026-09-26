@@ -30,16 +30,18 @@ from claude_agent_sdk import (
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 
 from agentgui.protocol import ApprovalRequest, Frame, frame, tool_kind
-from agentgui.store import SessionRecord, Store
+from agentgui.store import Autonomy, SessionRecord, Store
 from agentgui.usage import model_usage, usage_frame
 
 from ._procs import kill_group, resolve_executable
 from .base import ApproveFn, BackendBase, Capabilities, UserTurn
 
-_PERMISSION_MODES: dict[str, Literal["plan", "default", "acceptEdits"]] = {
-    "read-only": "plan",
+# ``default`` prompts through ``can_use_tool`` for every write and command, so
+# ``ask`` can approve one inline; ``acceptEdits`` auto-accepts file edits and
+# still prompts for shell. Keys must match ``store.AUTONOMY_LEVELS``.
+_PERMISSION_MODES: dict[Autonomy, Literal["default", "acceptEdits"]] = {
     "ask": "default",
-    "auto-edit": "acceptEdits",
+    "edit": "acceptEdits",
 }
 
 
@@ -123,10 +125,9 @@ class ClaudeBackend(BackendBase):
         self, name: str, inputs: dict[str, Any], context: ToolPermissionContext
     ) -> PermissionResultAllow | PermissionResultDeny:
         kind = tool_kind(name)
-        if self.session.autonomy == "read-only":
-            if kind in {"read", "search", "web"}:
-                return PermissionResultAllow(updated_input=inputs)
-            return PermissionResultDeny(message="Read-only session")
+        # Both levels reach the approval path: under ``ask`` a write is something
+        # the user may grant, not something refused on their behalf. Reads never
+        # arrive here — ``default`` mode allows them without consulting us.
         # Exact command / path scope is conservative: compound commands never
         # inherit authorization from a shared first word such as `python`.
         scope = str(
