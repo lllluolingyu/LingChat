@@ -7,6 +7,9 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ### Added
 
+- Migrated the multi-backend Agent-Chat-GUI implementation into this checkout
+  as the additive `agentgui` package and CLI. The existing `lingchat` command
+  remains available during evaluation.
 - Arbitrary image, PDF, text, and binary browser attachments, with limits
   sourced from LingCore and support for up to eight files per message.
 - Per-connection shell token-prefix allowlisting from eligible confirmation
@@ -17,6 +20,8 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 - Compatibility now covers `lingcore>=0.2.0,<0.4.0`, including the upcoming
   LingCore 0.3 line.
+- Claude Code support is available through the optional `lingchat[claude]`
+  extra; LingCore and Codex remain available from the base installation.
 - CI tests against LingCore `main` instead of the 0.2.0 release commit, and now
   enforces Ruff lint/format plus package-wide mypy checks.
 - Transcript responses omit non-image base64 payloads and expose bounded size

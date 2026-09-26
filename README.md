@@ -15,6 +15,29 @@ LingChat/
   tests/                # bridge tests via Starlette TestClient + a scripted fake LLM
 ```
 
+## Multi-backend AgentGUI
+
+This repository also contains `agentgui`, the next local GUI for Claude Code,
+Codex, and LingCore. It keeps one backend selected per conversation and uses
+the same approval, transcript, attachment, fork, and tool-card surface for all
+three backends. The existing `lingchat` command and package remain available
+while this migration is being evaluated.
+
+Run the new GUI from this checkout with:
+
+```bash
+uv sync
+uv run agentgui
+```
+
+The command prints a tokenized loopback URL. The AgentGUI catalog is loaded from
+`~/.config/agentgui/models.toml` and creates a default catalog on first run.
+Codex uses its installed CLI login and LingCore entries use the profiles named
+in the catalog. Claude Code support is optional; install `lingchat[claude]` to
+enable it. The multi-backend implementation lives under `agentgui/`, its
+browser assets under `agentgui/web/`, and its adapter tests under
+`tests/test_agentgui_*.py` and `tests/agentgui_fakes/`.
+
 ## Install and run
 
 This checkout requires Python 3.11 or newer and supports LingCore 0.2.x and

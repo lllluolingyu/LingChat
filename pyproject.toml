@@ -22,8 +22,12 @@ dependencies = [
     "uvicorn[standard]==0.51.0",
 ]
 
+[project.optional-dependencies]
+claude = ["claude-agent-sdk==0.2.159"]
+
 [project.scripts]
 lingchat = "lingchat.__main__:main"
+agentgui = "agentgui.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/lllluolingyu/LingChat"
@@ -35,11 +39,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["lingchat"]
+packages = ["lingchat", "agentgui"]
 
-# The browser UI must ship inside the wheel (as lingchat/web/) or an installed
-# LingChat cannot serve its own front-end; in a repo checkout the same files
-# live at ./web (server.py checks both locations).
+# Both browser UIs ship inside the wheel: the legacy LingChat UI under
+# lingchat/web/ and the multi-backend AgentGUI UI under agentgui/web/.
 [tool.hatch.build.targets.wheel.force-include]
 "web" = "lingchat/web"
 
@@ -53,6 +56,9 @@ dev = [
     "mypy==2.3.0",
     "pytest==9.0.3",
     "pytest-asyncio==1.4.0",
+    "claude-agent-sdk==0.2.159",
+    "httpx==0.28.1",
+    "jsonschema==4.26.0",
     "ruff==0.16.1",
 ]
 
@@ -68,7 +74,7 @@ select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.mypy]
 python_version = "3.11"
-files = ["lingchat"]
+files = ["lingchat", "agentgui"]
 check_untyped_defs = true
 disallow_untyped_defs = true
 no_implicit_optional = true

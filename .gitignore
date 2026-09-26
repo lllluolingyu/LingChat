@@ -11,3 +11,10 @@ __pycache__/
 .DS_Store
 .claude/
 .codex/
+
+# AgentGUI local state and caches
+/agentgui/*.db
+/agentgui/*.db-shm
+/agentgui/*.db-wal
+.ruff_cache/
+.mypy_cache/
