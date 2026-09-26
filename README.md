@@ -12,8 +12,24 @@ LingChat/
   lingchat/server.py    # FastAPI app + WebSocket bridge + per-connection Agent
   lingchat/__main__.py  # `python -m lingchat` / `lingchat` entry point
   web/                  # vanilla HTML/CSS/JS single page (no build step)
+  web/fonts/            # self-hosted variable fonts (SIL OFL 1.1, Latin subsets)
   tests/                # bridge tests via Starlette TestClient + a scripted fake LLM
 ```
+
+Both UIs share one design system: a warm paper-and-clay palette on flat
+backgrounds, with dark and light themes driven entirely from tokens on `:root`
+and `html[data-theme="light"]`. Interface text is set in Inter, agent replies in
+Source Serif 4, and code in JetBrains Mono; the three variable fonts are served
+from `web/fonts/` (and `agentgui/web/fonts/`), so nothing is fetched from a font
+CDN at runtime. Scripts outside the Latin subsets — CJK in particular — fall
+through to the system faces named in `--sans`, `--serif`, and `--mono`.
+
+Emphasis is deliberate and ordered, loudest first: **main content ≈ input box >
+code / notes > top bar > tool calls > background**. Depth is a hairline and one
+of two short shadows, never a glow, and translucent blurred panels are reserved
+for the few surfaces that genuinely float over the transcript. The ladder is
+documented at the top of `agentgui/web/style.css`; read it before giving a
+component a fill, a border or a shadow it does not already have.
 
 ## Multi-backend AgentGUI
 

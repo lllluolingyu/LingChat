@@ -73,8 +73,13 @@ jumpBtn.addEventListener("click", () => {
 
 // --- rows and attachments ------------------------------------------------------
 
+// The agent mark: a radiating asterisk, drawn in currentColor so the avatar
+// and the empty-state mark both inherit whatever the theme puts behind them.
 const AVATAR_SVG =
-  '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 6.5l1.9 6 6.1 1.9-6.1 1.9-1.9 6-1.9-6-6.1-1.9 6.1-1.9z" fill="white"/></svg>';
+  '<svg viewBox="0 0 32 32" aria-hidden="true">' +
+  '<path d="M16.0 13.8L16.0 5.0M17.6 14.4L22.1 9.9M18.2 16.0L27.0 16.0M17.6 17.6L22.1 22.1' +
+  'M16.0 18.2L16.0 27.0M14.4 17.6L9.9 22.1M13.8 16.0L5.0 16.0M14.4 14.4L9.9 9.9" ' +
+  'fill="none" stroke="currentColor" stroke-width="3.1" stroke-linecap="round"/></svg>';
 
 function removeEmptyState() {
   const el = threadEl.querySelector(".empty-state");

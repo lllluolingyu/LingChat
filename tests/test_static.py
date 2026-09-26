@@ -44,6 +44,24 @@ def test_index_asset_references_are_served(tmp_path):
         )
 
 
+def test_stylesheet_url_references_resolve():
+    """Self-hosted fonts are referenced from CSS, which no page-load test sees.
+
+    A renamed or dropped ``.woff2`` degrades silently to a system fallback, so
+    check both browser UIs against their own directories.
+    """
+    import agentgui
+
+    for web in (_WEB_DIR, Path(agentgui.__file__).with_name("web")):
+        css = (web / "style.css").read_text(encoding="utf-8")
+        refs = re.findall(r'url\(["\']?([^"\')]+)["\']?\)', css)
+        assert refs, f"no url() references found in {web}/style.css"
+        for ref in refs:
+            assert (web / ref).is_file(), (
+                f"{web.name}/style.css references missing {ref}"
+            )
+
+
 def test_es_module_imports_resolve():
     js_dir = _WEB_DIR / "js"
     modules = sorted(js_dir.glob("*.js"))

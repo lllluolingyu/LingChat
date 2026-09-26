@@ -24,6 +24,32 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ### Changed
 
+- Both browser UIs are restyled onto a warm paper-and-clay palette with a
+  typographic split — Inter for the interface, Source Serif 4 for agent replies,
+  JetBrains Mono for code. The three variable fonts are self-hosted under
+  `web/fonts/` (SIL OFL 1.1, Latin subsets; other scripts fall through to system
+  faces), so the UI still needs no network access and no build step.
+- Page backgrounds are flat colour, and the panels no longer glow: gradient
+  washes, coloured bloom shadows, inset sheens and hover lifts are gone, and
+  depth is stated with a hairline plus one of two short shadows. Backdrop blur
+  is kept only where something actually passes behind a panel — the approval
+  card, the scroll-to-latest button and a consumer-injected overlay — since over
+  a flat background a blurred translucent fill resolves to the same solid colour
+  at the cost of a compositing pass.
+- The whole stylesheet is now ordered by one emphasis ladder, documented at the
+  top of the file: **main content ≈ input box > code / notes > top bar > tool
+  calls > background**. In practice the top bar became a flush hairlined strip
+  instead of a floating card, tool calls became hairline rows that only take a
+  fill once opened, and code steps *away* from the page in whichever direction
+  the page itself goes — dark on the dark canvas, light grey on the ivory one.
+- Design tokens changed with it. Added `--serif`, `--surface-input`,
+  `--surface-overlay`, `--code-edge` and `--bubble-user`; removed
+  `--accent-glow`, `--brand-grad`, `--user-grad`, `--glass-highlight`,
+  `--glass-border`, `--glass-border-strong` (use `--border`/`--border-strong`),
+  `--glass-shadow-soft`, `--glass-blur-strong`, `--shadow-1`, `--shadow-2`,
+  `--surface` and `--surface-floating`. Both themes are still driven entirely
+  from these, so a consumer that only references tokens picks the new look up
+  untouched.
 - Compatibility now covers `lingcore>=0.2.0,<0.4.0`, including the upcoming
   LingCore 0.3 line.
 - Claude Code support is available through the optional `lingchat[claude]`
