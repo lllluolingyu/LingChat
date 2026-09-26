@@ -38,6 +38,19 @@ enable it. The multi-backend implementation lives under `agentgui/`, its
 browser assets under `agentgui/web/`, and its adapter tests under
 `tests/test_agentgui_*.py` and `tests/agentgui_fakes/`.
 
+### Usage reporting
+
+Every backend emits one `usage` frame shape. The flat `input`/`output`/`cached`/
+`cost_usd`/`context_pct` fields drive the browser chip; `models` carries
+per-model token counts for a consumer that prices spend itself. `scope` says
+what the flat counters cover (`request`, `turn`, or `conversation`) and
+`cumulative` says whether `models` counters are session running totals —
+Claude and Codex report totals a biller must diff, LingCore reports one
+request. Per-model counts follow each provider's own convention: `cached`/
+`cache_write` are inside `input` for Codex and separate from it for Claude,
+while `reasoning` is inside `output`. `cost_usd` is the agent's own estimate
+and is never authoritative for billing.
+
 ## Install and run
 
 This checkout requires Python 3.11 or newer and supports LingCore 0.2.x and

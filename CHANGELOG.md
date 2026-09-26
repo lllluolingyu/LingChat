@@ -7,6 +7,12 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ### Added
 
+- A single `usage` frame shape across all three backends (`agentgui/usage.py`),
+  carrying per-model token counts plus `scope`/`cumulative` so a consumer can
+  price spend without guessing each agent's counter semantics. Codex now also
+  reports its served model and cache-write/reasoning tokens, Claude reports
+  subagent-inclusive per-model totals, and LingCore reports provider usage from
+  its new `UsageReported` event (including requests billed before a Stop).
 - Migrated the multi-backend Agent-Chat-GUI implementation into this checkout
   as the additive `agentgui` package and CLI. The existing `lingchat` command
   remains available during evaluation.

@@ -31,6 +31,7 @@ from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITra
 
 from agentgui.protocol import ApprovalRequest, Frame, frame, tool_kind
 from agentgui.store import SessionRecord, Store
+from agentgui.usage import model_usage, usage_frame
 
 from ._procs import kill_group, resolve_executable
 from .base import ApproveFn, BackendBase, Capabilities, UserTurn
@@ -239,8 +240,23 @@ class ClaudeBackend(BackendBase):
                 elif isinstance(message, ResultMessage):
                     self.confirm_native(message.session_id)
                     usage = message.usage or {}
-                    yield frame(
-                        "usage",
+                    # usage covers this turn's main loop only; model_usage is
+                    # the session running total and includes subagents, so it
+                    # is what a biller diffs. total_cost_usd is likewise
+                    # cumulative (and only the CLI's own estimate).
+                    yield usage_frame(
+                        [
+                            model_usage(
+                                name,
+                                input=per.get("inputTokens", 0),
+                                output=per.get("outputTokens", 0),
+                                cached=per.get("cacheReadInputTokens", 0),
+                                cache_write=per.get("cacheCreationInputTokens", 0),
+                            )
+                            for name, per in (message.model_usage or {}).items()
+                        ],
+                        scope="turn",
+                        cumulative=True,
                         input=usage.get("input_tokens", 0),
                         output=usage.get("output_tokens", 0),
                         cached=usage.get("cache_read_input_tokens", 0),

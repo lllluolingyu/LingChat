@@ -18,7 +18,12 @@ def result(interrupted=False):
     emit({"type": "result", "subtype": "success", "duration_ms": 1, "duration_api_ms": 1,
           "is_error": False, "num_turns": 1, "session_id": session,
           "result": "" if interrupted else "hello", "total_cost_usd": 0.001,
-          "usage": {"input_tokens": 12, "output_tokens": 3, "cache_read_input_tokens": 4}})
+          "usage": {"input_tokens": 12, "output_tokens": 3, "cache_read_input_tokens": 4},
+          # Cumulative across the connection, and unlike `usage` it counts subagents.
+          "modelUsage": {"claude-sonnet-4-9": {"inputTokens": 30, "outputTokens": 8,
+                                               "cacheReadInputTokens": 4,
+                                               "cacheCreationInputTokens": 6,
+                                               "costUSD": 0.001}}})
 
 
 def finish(allowed):

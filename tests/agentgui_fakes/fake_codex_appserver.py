@@ -17,7 +17,7 @@ for line in sys.stdin:
     if method == "initialize":
         result = {"userAgent": "fake"}
     elif method in {"thread/start", "thread/resume", "thread/fork"}:
-        result = {"thread": {"id": "fake-thread"}}
+        result = {"thread": {"id": "fake-thread"}, "model": "gpt-5.3-codex"}
     elif method == "turn/start":
         result = {"turn": {"id": "fake-turn"}}
     else:
@@ -33,6 +33,31 @@ for line in sys.stdin:
                         "turnId": "fake-turn",
                         "itemId": "item",
                         "delta": "hello",
+                    },
+                }
+            ),
+            flush=True,
+        )
+        usage = {
+            "inputTokens": 100,
+            "cachedInputTokens": 60,
+            "cacheWriteInputTokens": 5,
+            "outputTokens": 20,
+            "reasoningOutputTokens": 7,
+            "totalTokens": 120,
+        }
+        print(
+            json.dumps(
+                {
+                    "method": "thread/tokenUsage/updated",
+                    "params": {
+                        "threadId": "fake-thread",
+                        "turnId": "fake-turn",
+                        "tokenUsage": {
+                            "total": usage,
+                            "last": usage,
+                            "modelContextWindow": 1000,
+                        },
                     },
                 }
             ),

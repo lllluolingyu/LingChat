@@ -23,6 +23,7 @@ from lingcore.events import (
     ToolCallStarted,
     ToolResultEvent,
     TurnCancelled,
+    UsageReported,
 )
 from lingcore.message import UserInput
 from lingcore.sessions import SessionStore, new_session_id, open_store
@@ -31,6 +32,7 @@ from lingcore.tools.builtin.shell import allowlist_pattern_for
 from agentgui.attachments import attachment_payloads
 from agentgui.protocol import ApprovalRequest, Frame, frame, tool_kind
 from agentgui.store import SessionRecord, Store
+from agentgui.usage import model_usage, usage_frame
 
 from .base import ApproveFn, BackendBase, Capabilities, UserTurn
 
@@ -93,6 +95,25 @@ def event_frame(event: Any) -> Frame:
                 "notice",
                 level="info",
                 text=f"Context compacted: {count} messages ({before} → {after} tokens).",
+            )
+        case UsageReported(usage):
+            # One model request (reply, summarizer, or vision fallback);
+            # LingCore reports only what the provider returned.
+            return usage_frame(
+                [
+                    model_usage(
+                        usage.model,
+                        input=usage.input_tokens,
+                        output=usage.output_tokens,
+                        cached=usage.cached_input_tokens,
+                        reasoning=usage.reasoning_tokens,
+                    )
+                ],
+                scope="request",
+                cumulative=False,
+                input=usage.input_tokens,
+                output=usage.output_tokens,
+                cached=usage.cached_input_tokens,
             )
         case StreamRetry(attempt, maximum, reason, discarded):
             return frame(
@@ -221,7 +242,10 @@ class LingCoreBackend(BackendBase):
             await asyncio.gather(task, return_exceptions=True)
         result = self.agent.finalize_cancelled_turn() if started else TurnCancelled()
         self.sync_history()
-        return [event_frame(result)]
+        # Requests that finished before the cancellation landed were billed.
+        return [event_frame(u) for u in self.agent.drain_usage()] + [
+            event_frame(result)
+        ]
 
     def reconcile(self, status: list[dict[str, Any]]) -> None:
         # Reconcile after native cancellation finalization, then retain status

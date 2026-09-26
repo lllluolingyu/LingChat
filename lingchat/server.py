@@ -64,6 +64,7 @@ from lingcore.events import (
     ToolCallStarted,
     ToolResultEvent,
     TurnCancelled,
+    UsageReported,
 )
 from lingcore.media import attachment_from_wire
 from lingcore.media_types import (
@@ -180,6 +181,17 @@ def _event_to_msg(event: AgentEvent) -> dict[str, Any]:
                 "max_attempts": max_attempts,
                 "reason": reason,
                 "discarded_chars": discarded_chars,
+            }
+        case UsageReported(usage):
+            # One model request's provider-reported tokens (reply, summarizer,
+            # or vision fallback). Advisory: this UI has no cost accounting.
+            return {
+                "type": "usage",
+                "model": usage.model,
+                "input": usage.input_tokens,
+                "output": usage.output_tokens,
+                "cached": usage.cached_input_tokens,
+                "reasoning": usage.reasoning_tokens,
             }
         case TurnCancelled(reason):
             return {"type": "cancelled", "reason": reason}

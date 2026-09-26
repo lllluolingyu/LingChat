@@ -9,6 +9,7 @@ from typing import Any
 
 from agentgui.protocol import ApprovalRequest, Frame, frame, tool_kind
 from agentgui.store import SessionRecord, Store
+from agentgui.usage import model_usage, usage_frame
 
 from ._jsonrpc import JsonRpc
 from ._procs import resolve_executable
@@ -27,6 +28,7 @@ class CodexBackend(BackendBase):
         self.started: set[str] = set()
         self.items: dict[str, dict[str, Any]] = {}
         self.stopping = False
+        self.model = ""  # replaced by the model thread/start reports
 
     def thread_options(self) -> dict[str, Any]:
         return {
@@ -69,6 +71,10 @@ class CodexBackend(BackendBase):
                 method = "thread/resume"
                 params.update(threadId=self.session.native_id, excludeTurns=True)
             result = await self.rpc.request(method, params)
+            # The served model can differ from the catalog's native name.
+            served = result.get("model")
+            if isinstance(served, str) and served:
+                self.model = served
             self.save_native(result["thread"]["id"])
         except BaseException:
             await self.rpc.close()
@@ -223,8 +229,23 @@ class CodexBackend(BackendBase):
                     usage = p["tokenUsage"]
                     total = usage["total"]
                     window = usage.get("modelContextWindow")
-                    yield frame(
-                        "usage",
+                    # Codex reports thread running totals, and repeats an
+                    # unchanged total on some notifications, so only the total
+                    # is safe to diff for billing. cachedInputTokens and
+                    # reasoningOutputTokens are parts of input/output.
+                    yield usage_frame(
+                        [
+                            model_usage(
+                                self.model,
+                                input=total["inputTokens"],
+                                output=total["outputTokens"],
+                                cached=total["cachedInputTokens"],
+                                cache_write=total.get("cacheWriteInputTokens", 0),
+                                reasoning=total["reasoningOutputTokens"],
+                            )
+                        ],
+                        scope="conversation",
+                        cumulative=True,
                         input=total["inputTokens"],
                         output=total["outputTokens"],
                         cached=total["cachedInputTokens"],
