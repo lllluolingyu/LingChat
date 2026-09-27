@@ -7,9 +7,19 @@
 // Plain ES modules, no build step: the browser loads this file directly.
 
 import {
+  LANG_NAMES,
+  apply as applyI18n,
+  lang,
+  nextLang,
+  onLangChange,
+  setLang,
+  t,
+} from "./i18n.js";
+import {
   api,
   connect,
   initConnection,
+  refreshStatusLabel,
   resetConfirms,
   showConfirm,
   socketOpen,
@@ -22,6 +32,7 @@ import {
   getSessionId,
   loadThread,
   newChat,
+  refreshChatTitle,
   refreshSessions,
   setChatTitle,
   takePendingForkEdit,
@@ -67,6 +78,8 @@ const agentChip = $("agent-chip");
 const newChatEl = $("new-chat");
 const themeToggle = $("theme-toggle");
 const themeLabel = $("theme-label");
+const langToggle = $("lang-toggle");
+const langLabel = $("lang-label");
 
 // Focusing the input pops the on-screen keyboard on touch devices — only
 // auto-focus where a hardware pointer/keyboard is the norm.
@@ -83,6 +96,9 @@ let pendingTurnNote = null;
 let pendingAttachments = [];
 let forkActive = false;
 let currentCapabilities = {};
+// The last "hello", kept so a language change can relabel the chrome it set
+// without waiting for a reconnect.
+let identity = null;
 
 let limits = {
   max_attachments: 8,
@@ -133,8 +149,9 @@ function handle(msg) {
   switch (msg.type) {
     case "hello": {
       updateLimits(msg.limits);
-      const agentName = msg.agent || msg.backend || "the agent";
-      setAgentIdentity(agentName, msg.model || "");
+      identity = msg;
+      const agentName = msg.agent || msg.backend || t("thread.the_agent");
+      setAgentIdentity(agentName, msg.model || "", msg.backend || "");
       currentCapabilities = msg.capabilities || {};
       setCapabilities(currentCapabilities);
       $("fork-chat").hidden = !currentCapabilities.fork;
@@ -142,9 +159,9 @@ function handle(msg) {
       fileInputEl.accept = currentCapabilities.files ? "" : "image/png,image/jpeg,image/gif,image/webp";
       attachEl.hidden = !currentCapabilities.images && !currentCapabilities.files;
       agentChip.textContent = `${msg.model} · ${msg.autonomy}`;
-      agentChip.title = `Workspace: ${msg.workspace}`;
+      agentChip.title = t("thread.workspace", { path: msg.workspace });
       agentChip.hidden = false;
-      inputEl.placeholder = `Message ${agentName}…`;
+      inputEl.placeholder = t("composer.placeholder_named", { name: agentName });
       adoptSession(msg.session || null); // server is authoritative
       pendingAttachments = [];
       renderAttachmentTray();
@@ -155,7 +172,7 @@ function handle(msg) {
         const pending = takePendingForkEdit(msg.session);
         if (!pending) return;
         if (!wsSend({ type: "edit", seq: pending.seq, text: pending.text })) {
-          addNote("error", "The fork was created, but regeneration could not start.");
+          addNote("error", t("note.fork_regen_failed"));
           return;
         }
         pendingTurnNote = null;
@@ -165,14 +182,11 @@ function handle(msg) {
       break;
     }
     case "turn_busy":
-      addNote("error", "A turn is already running. Stop it before sending another message.");
+      addNote("error", t("note.turn_busy"));
       break;
     case "session_busy":
       suspendReconnect();
-      addNote(
-        "error",
-        "This session is open in another tab — close it there, or pick another session.",
-      );
+      addNote("error", t("note.session_busy"));
       break;
     case "text":
       appendAgentText(msg.delta ?? msg.text ?? "");
@@ -190,7 +204,7 @@ function handle(msg) {
       showTyping(); // the model is reading the result
       break;
     case "skill":
-      addNote("skill", `Skill ${msg.active ? "activated" : "deactivated"}: ${msg.name}`);
+      addNote("skill", t(msg.active ? "note.skill_on" : "note.skill_off", { name: msg.name }));
       break;
     case "compact":
       finalizeAgentMessage();
@@ -202,7 +216,14 @@ function handle(msg) {
       // bubble holds is void and will be regenerated (possibly differently).
       if (isStreaming() && msg.discarded_chars) discardAgentMessage();
       else abandonStreaming();
-      addNote("retry", `${msg.reason}; retrying (${msg.attempt}/${msg.max_attempts})`);
+      addNote(
+        "retry",
+        t("note.retry", {
+          reason: msg.reason,
+          attempt: msg.attempt,
+          max: msg.max_attempts,
+        }),
+      );
       showTyping();
       break;
     case "approval":
@@ -214,7 +235,7 @@ function handle(msg) {
       cancelPendingTools();
       resetConfirms();
       hideTyping();
-      pendingTurnNote = { kind: "system", text: msg.reason || "Stopped by user" };
+      pendingTurnNote = { kind: "system", text: msg.reason || t("note.stopped") };
       addNote(pendingTurnNote.kind, pendingTurnNote.text);
       break;
     case "edit_accepted":
@@ -224,7 +245,7 @@ function handle(msg) {
       hideTyping();
       reloadTranscript({
         kind: "error",
-        text: msg.message || "The message could not be edited.",
+        text: msg.message || t("note.edit_failed"),
       });
       break;
     case "stop_ignored":
@@ -359,16 +380,21 @@ function pendingTotalBytes() {
 async function addFiles(files) {
   for (const file of files) {
     if (pendingAttachments.length >= limits.max_attachments) {
-      addNote("error", `You can attach at most ${limits.max_attachments} files per message.`);
+      addNote("error", t("composer.too_many", { count: limits.max_attachments }));
       break;
     }
     if (pendingTotalBytes() + file.size > limits.total_max_bytes) {
-      addNote("error", `Attachments exceed the ${Math.floor(limits.total_max_bytes / (1024 * 1024))}MB total limit per message.`);
+      addNote(
+        "error",
+        t("composer.too_large", {
+          mb: Math.floor(limits.total_max_bytes / (1024 * 1024)),
+        }),
+      );
       break;
     }
     try {
-      if (!currentCapabilities.files && !file.type.startsWith("image/")) throw new Error("This backend supports image attachments only.");
-      if (file.type.startsWith("image/") && !currentCapabilities.images) throw new Error("This backend does not support images.");
+      if (!currentCapabilities.files && !file.type.startsWith("image/")) throw new Error(t("composer.images_only"));
+      if (file.type.startsWith("image/") && !currentCapabilities.images) throw new Error(t("composer.no_images"));
       pendingAttachments.push(await fileToAttachment(file));
     } catch (e) {
       addNote("error", e.message || String(e));
@@ -498,7 +524,7 @@ inputEl.addEventListener("paste", (e) => {
 
 function syncThemeLabel() {
   const light = document.documentElement.dataset.theme === "light";
-  themeLabel.textContent = light ? "Light theme" : "Dark theme";
+  themeLabel.textContent = t(light ? "app.theme_light" : "app.theme_dark");
 }
 
 themeToggle.addEventListener("click", () => {
@@ -509,6 +535,38 @@ themeToggle.addEventListener("click", () => {
     localStorage.setItem("agentgui-theme", toLight ? "light" : "dark");
   } catch { /* private mode — theme just won't persist */ }
   syncThemeLabel();
+});
+
+// --- language ------------------------------------------------------------------
+
+// The button offers the language it would switch to, so its own label never
+// needs translating.
+function syncLangLabel() {
+  langLabel.textContent = LANG_NAMES[nextLang()];
+}
+
+langToggle.addEventListener("click", () => setLang(nextLang()));
+
+// A language change repaints everything already on screen. The static markup is
+// handled by the data-i18n pass; the rest is chrome this module built itself,
+// plus the transcript, whose tool and note labels were rendered in the old
+// language and are cheapest to get right by replaying it.
+onLangChange(() => {
+  applyI18n();
+  syncThemeLabel();
+  syncLangLabel();
+  refreshStatusLabel();
+  refreshChatTitle();
+  refreshSessions();
+  if (identity) {
+    const agentName = identity.agent || identity.backend || t("thread.the_agent");
+    setAgentIdentity(agentName, identity.model || "", identity.backend || "");
+    agentChip.title = t("thread.workspace", { path: identity.workspace });
+    inputEl.placeholder = t("composer.placeholder_named", { name: agentName });
+  } else {
+    inputEl.placeholder = t("composer.placeholder");
+  }
+  if (!turnActive && !transcriptSyncing) reloadTranscript();
 });
 
 // --- boot -------------------------------------------------------------------------
@@ -531,7 +589,9 @@ initConnection({
   focusInput,
 });
 
+applyI18n();
 syncThemeLabel();
+syncLangLabel();
 if (getSessionId()) connect();
 else newChat();
 refreshSessions();
@@ -544,10 +604,10 @@ $("fork-chat").addEventListener("click", async () => {
 });
 $("doctor-open").addEventListener("click", async () => {
   const dialog = $("doctor-dialog"); dialog.showModal();
-  const results = $("doctor-results"); results.textContent = "Checking installed agents…";
+  const results = $("doctor-results"); results.textContent = t("app.doctor_running");
   try {
     const response = await api("/api/doctor");
-    if (!response.ok) throw new Error("Open the token URL printed by agentgui to authenticate.");
+    if (!response.ok) throw new Error(t("app.auth_hint"));
     const data = await response.json(); results.textContent = "";
     for (const check of data.checks) {
       const item = document.createElement("p");

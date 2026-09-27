@@ -5,6 +5,8 @@
 // authoritative for what this socket actually attached to.
 
 import { api, reconnectNow } from "./connection.js";
+import { t } from "./i18n.js";
+import { markFor } from "./marks.js";
 import {
   addAgentMarkdown,
   addNote,
@@ -54,19 +56,28 @@ export function adoptSession(id) {
   else history.replaceState(null, "", location.pathname);
 }
 
+let storedTitle = ""; // the server's title, "" for an unnamed conversation
+
 export function setChatTitle(title) {
-  const t = title || "New chat";
-  chatTitleEl.textContent = t;
-  chatTitleEl.title = t;
-  document.title = title ? `${title} · Agent Chat` : "Agent Chat";
+  storedTitle = title || "";
+  const shown = storedTitle || t("app.new_chat");
+  chatTitleEl.textContent = shown;
+  chatTitleEl.title = shown;
+  document.title = storedTitle ? `${storedTitle} · Agent Chat` : "Agent Chat";
+}
+
+// An unnamed conversation shows a translated placeholder, so the heading has to
+// be repainted when the language changes.
+export function refreshChatTitle() {
+  setChatTitle(storedTitle);
 }
 
 function relTime(iso) {
   const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
+  if (s < 60) return t("time.now");
+  if (s < 3600) return t("time.minutes", { n: Math.floor(s / 60) });
+  if (s < 86400) return t("time.hours", { n: Math.floor(s / 3600) });
+  return t("time.days", { n: Math.floor(s / 86400) });
 }
 
 // --- listing ---------------------------------------------------------------
@@ -111,8 +122,7 @@ function renderSessionsDisabled(notice) {
   sessionListEl.textContent = "";
   const note = document.createElement("div");
   note.className = "sidebar-note";
-  note.textContent =
-    notice || "session history is off for this profile (sessions.enabled: false)";
+  note.textContent = notice || t("sessions.disabled");
   sessionListEl.appendChild(note);
 }
 
@@ -121,11 +131,11 @@ function dateGroup(iso) {
   const now = new Date();
   const startOf = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const days = Math.round((startOf(now) - startOf(d)) / 86400000);
-  if (days <= 0) return "Today";
-  if (days === 1) return "Yesterday";
-  if (days < 7) return "Previous 7 days";
-  if (days < 30) return "Previous 30 days";
-  return "Older";
+  if (days <= 0) return t("group.today");
+  if (days === 1) return t("group.yesterday");
+  if (days < 7) return t("group.week");
+  if (days < 30) return t("group.month");
+  return t("group.older");
 }
 
 function renderSessionList(sessions) {
@@ -133,7 +143,7 @@ function renderSessionList(sessions) {
   if (!sessions.length) {
     const empty = document.createElement("div");
     empty.className = "sidebar-empty";
-    empty.textContent = "No conversations yet";
+    empty.textContent = t("sessions.empty");
     sessionListEl.appendChild(empty);
     return;
   }
@@ -157,23 +167,26 @@ function sessionItem(s) {
 
   const title = document.createElement("div");
   title.className = "session-title";
-  title.textContent = s.title || "New chat";
+  title.textContent = s.title || t("app.new_chat");
 
+  // The mark says which agent at a glance; the word stays for the backends that
+  // share the fallback glyph.
   const badge = document.createElement("span");
   badge.className = "backend-badge";
-  badge.textContent = s.backend || "agent";
+  badge.innerHTML = markFor(s.backend || "");
+  badge.append(s.backend || t("sessions.agent"));
   title.prepend(badge);
 
   const time = document.createElement("div");
   time.className = "session-time";
-  time.textContent = `${relTime(s.updated_at)} · ${s.message_count} msgs`;
+  time.textContent = `${relTime(s.updated_at)} · ${t("sessions.messages", { count: s.message_count })}`;
 
   const actions = document.createElement("span");
   actions.className = "session-actions";
 
   const rename = document.createElement("button");
   rename.className = "icon-btn";
-  rename.title = "Rename";
+  rename.title = t("sessions.rename");
   rename.innerHTML =
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.8 3.1l3.1 3.1L6 13.1l-3.6.5.5-3.6zM11.6 1.3l3.1 3.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   rename.addEventListener("click", (e) => {
@@ -183,20 +196,20 @@ function sessionItem(s) {
 
   const del = document.createElement("button");
   del.className = "icon-btn danger";
-  del.title = "Delete";
+  del.title = t("sessions.delete");
   del.innerHTML =
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.8 4.2h10.4M6.2 4V2.8h3.6V4M4 4.2l.7 9a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9l.7-9M6.5 7v4.4M9.5 7v4.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   del.addEventListener("click", (e) => {
     e.stopPropagation();
     if (!item.classList.contains("confirm-delete")) {
       item.classList.add("confirm-delete");
-      title.textContent = "Delete this chat?";
-      del.title = "Click again to confirm";
+      title.textContent = t("sessions.delete_confirm");
+      del.title = t("sessions.delete_again");
       setTimeout(() => {
         if (item.isConnected && item.classList.contains("confirm-delete")) {
           item.classList.remove("confirm-delete");
-          title.textContent = s.title || "New chat";
-          del.title = "Delete";
+          title.textContent = s.title || t("app.new_chat");
+          del.title = t("sessions.delete");
         }
       }, 3200);
       return;
@@ -218,7 +231,7 @@ function startRename(item, titleEl, s) {
   const input = document.createElement("input");
   input.className = "session-rename-input";
   input.value = s.title || "";
-  input.placeholder = "Session name";
+  input.placeholder = t("sessions.name");
   titleEl.replaceWith(input);
   input.focus();
   input.select();
@@ -300,7 +313,7 @@ function renderHistory(turns) {
         case "final": if (!sawText && frame.content) text = frame.content; break;
         case "usage": renderUsage(frame); break;
         case "error": flush(); addNote("error", frame.message); break;
-        case "cancelled": flush(); addNote("system", frame.reason || "Stopped by user"); break;
+        case "cancelled": flush(); addNote("system", frame.reason || t("note.stopped")); break;
         case "notice":
           if (frame.discarded_chars) text = "";
           flush(); addNote(frame.level === "warning" ? "error" : "system", frame.text); break;
@@ -334,11 +347,11 @@ export async function forkCurrentSession(throughSeq, regenerateText = undefined)
       body: JSON.stringify({ through_seq: throughSeq }),
     });
   } catch {
-    addNote("error", "Could not fork this conversation.");
+    addNote("error", t("sessions.fork_failed"));
     return false;
   }
   if (!response.ok) {
-    let message = "Could not fork this conversation.";
+    let message = t("sessions.fork_failed");
     try {
       const data = await response.json();
       if (data.detail) message = data.detail;
@@ -352,11 +365,11 @@ export async function forkCurrentSession(throughSeq, regenerateText = undefined)
   try {
     forked = await response.json();
   } catch {
-    addNote("error", "The fork response was not valid JSON.");
+    addNote("error", t("sessions.fork_bad_json"));
     return false;
   }
   if (!forked.id) {
-    addNote("error", "The fork response did not include a session id.");
+    addNote("error", t("sessions.fork_no_id"));
     return false;
   }
   // If the user navigated elsewhere while the request was in flight, keep the
@@ -373,11 +386,24 @@ export async function forkCurrentSession(throughSeq, regenerateText = undefined)
   return true;
 }
 
+// Catalog entries by id, so the picker can draw the selected model's mark
+// without refetching. Reset on every fill.
+let modelsById = new Map();
+
+// The mark beside the picker: a GPT model is marked as one the moment it is
+// chosen, before the chat it opens exists.
+function syncModelMark() {
+  const host = $("new-model-mark");
+  if (!host) return;
+  host.innerHTML = markFor(modelsById.get($("new-model").value) || null);
+}
+
 function fillModels(data) {
   const select = $("new-model");
   const selected = select.value; select.textContent = "";
-  for (const [backend, label] of [["claude", "Claude Code"], ["codex", "Codex"], ["lingcore", "LingCore · cost-effective"]]) {
-    const group = document.createElement("optgroup"); group.label = label;
+  modelsById = new Map(data.models.map((m) => [m.id, m]));
+  for (const backend of ["claude", "codex", "lingcore"]) {
+    const group = document.createElement("optgroup"); group.label = t(`backend.${backend}`);
     for (const model of data.models.filter((m) => m.backend === backend)) {
       const option = document.createElement("option"); option.value = model.id; option.textContent = model.label;
       group.append(option);
@@ -385,6 +411,7 @@ function fillModels(data) {
     select.append(group);
   }
   if (selected && data.models.some((m) => m.id === selected)) select.value = selected;
+  syncModelMark();
   if (!$("new-workspace").value) $("new-workspace").value = data.recent_workspaces?.[0] || data.workspace || "";
   $("recent-workspaces").replaceChildren(...(data.recent_workspaces || []).map((path) => {
     const option = document.createElement("option"); option.value = path; return option;
@@ -398,7 +425,7 @@ export async function newChat() {
   $("new-chat-error").textContent = "";
   try {
     const response = await api("/api/models?live=false");
-    if (!response.ok) throw new Error("Open the token URL printed by agentgui to authenticate.");
+    if (!response.ok) throw new Error(t("app.auth_hint"));
     fillModels(await response.json());
     api("/api/models").then((res) => res.json()).then((data) => {
       if (dialog.open && data.models) fillModels(data);
@@ -406,6 +433,7 @@ export async function newChat() {
   } catch (error) { $("new-chat-error").textContent = error.message; }
 }
 
+$("new-model").addEventListener("change", syncModelMark);
 $("new-chat-cancel").addEventListener("click", () => $("new-chat-dialog").close());
 $("new-chat-form").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -416,7 +444,7 @@ $("new-chat-form").addEventListener("submit", async (event) => {
       body: JSON.stringify({ model_id: $("new-model").value, workspace: $("new-workspace").value, autonomy: $("new-autonomy").value }),
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Check the model and workspace directory.");
+    if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : t("newchat.failed"));
     $("new-chat-dialog").close();
     switchSession(data.id);
   } catch (error) { $("new-chat-error").textContent = error.message; }
@@ -431,7 +459,7 @@ async function deleteSession(id) {
     return;
   }
   if (res.status === 409) {
-    addNote("error", "Close this chat first — it is the open session (use New chat).");
+    addNote("error", t("sessions.delete_open"));
     return;
   }
   refreshSessions();

@@ -7,6 +7,19 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ### Added
 
+- An interface language for the AgentGUI browser UI, in Chinese and English,
+  switched from a toggle beside the theme one and remembered per browser
+  (`agentgui/web/js/i18n.js`). Static markup carries `data-i18n` attributes and
+  the rest calls `t()`; `<html lang>` is applied before first paint because it
+  selects the CJK face the font stacks fall through to. Changing language
+  repaints the open page, transcript included. The legacy `lingchat` UI is
+  unchanged and stays English.
+- A per-backend mark (`agentgui/web/js/marks.js`): GPT-series models — every
+  Codex entry, and any LingCore profile named for one — get a six-lobe blossom
+  instead of the radiating asterisk, on the reply avatar, the empty state, the
+  sidebar badge and beside the model picker. The glyph is built from three
+  rotated stadium loops rather than traced, so it stays legible at the 15px the
+  avatar renders.
 - A single `usage` frame shape across all three backends (`agentgui/usage.py`),
   carrying per-model token counts plus `scope`/`cumulative` so a consumer can
   price spend without guessing each agent's counter semantics. Codex now also
@@ -24,6 +37,10 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ### Changed
 
+- **AgentGUI now opens in Chinese.** English remains one click away in the
+  sidebar foot, and the choice persists per browser. Only the interface is
+  translated: model labels, backend names, workspace paths and agent output are
+  left exactly as their source gives them.
 - Both browser UIs are restyled onto a warm paper-and-clay palette with a
   typographic split — Inter for the interface, Source Serif 4 for agent replies,
   JetBrains Mono for code. The three variable fonts are self-hosted under
@@ -66,6 +83,8 @@ Notable user-facing LingChat changes are documented here. The project follows
 - AgentGUI's Claude sessions raise an approval for WebSearch, WebFetch, writes
   and commands again. The custom transport never passed
   `--permission-prompt-tool stdio`, so the CLI denied them itself without asking.
+- The model picker's option list is legible under the dark theme; options had
+  inherited a near-transparent fill and rendered pale behind light text.
 - Browser connections deep-copy nested tool options so a session allowlist can
   never leak into another connection through the shared profile.
 

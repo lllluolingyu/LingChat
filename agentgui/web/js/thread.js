@@ -9,6 +9,8 @@
 // for an id-less message.
 
 import { renderMarkdown, attachCopyHandler, COPY_ICON_SVG } from "./markdown.js";
+import { t } from "./i18n.js";
+import { markFor } from "./marks.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -20,17 +22,25 @@ let streaming = null; // {body, raw, rafId, col} for the assistant reply in flig
 let pendingTools = []; // [{id, name, status, body}] tool calls awaiting their result
 let typingEl = null;
 let stick = true; // keep the view glued to the newest message
-let agentName = "the agent";
+let agentName = "";
 let modelName = "";
+let agentMark = markFor(null); // the backend's glyph; see marks.js
 let editHandler = null; // (seq, editedText) => boolean, injected by main.js
 let forkHandler = null; // async (seq, regenerateText?) => boolean, injected by main.js
 let attachmentDownloadHandler = null; // async (seq, index, name), injected by main.js
 let capabilities = {};
 let thinking = null;
 
-export function setAgentIdentity(name, model) {
-  agentName = name || "the agent";
+// `backend` comes from the server's "hello"; it decides which mark the avatar,
+// the empty state and the typing row draw.
+export function setAgentIdentity(name, model, backend = "") {
+  agentName = name || "";
   modelName = model || "";
+  agentMark = markFor({ backend, id: model || "", native_model: model || "" });
+}
+
+function who() {
+  return agentName || t("thread.the_agent");
 }
 
 export function setEditHandler(handler) {
@@ -80,14 +90,6 @@ jumpBtn.addEventListener("click", () => {
 
 // --- rows and attachments ------------------------------------------------------
 
-// The agent mark: a radiating asterisk, drawn in currentColor so the avatar
-// and the empty-state mark both inherit whatever the theme puts behind them.
-const AVATAR_SVG =
-  '<svg viewBox="0 0 32 32" aria-hidden="true">' +
-  '<path d="M16.0 13.8L16.0 5.0M17.6 14.4L22.1 9.9M18.2 16.0L27.0 16.0M17.6 17.6L22.1 22.1' +
-  'M16.0 18.2L16.0 27.0M14.4 17.6L9.9 22.1M13.8 16.0L5.0 16.0M14.4 14.4L9.9 9.9" ' +
-  'fill="none" stroke="currentColor" stroke-width="3.1" stroke-linecap="round"/></svg>';
-
 function removeEmptyState() {
   const el = threadEl.querySelector(".empty-state");
   if (el) el.remove();
@@ -99,15 +101,15 @@ export function showEmptyState() {
   el.className = "empty-state";
   const mark = document.createElement("div");
   mark.className = "empty-mark";
-  mark.innerHTML = AVATAR_SVG;
+  mark.innerHTML = agentMark;
   const title = document.createElement("div");
   title.className = "empty-title";
-  title.textContent = `Chat with ${agentName}`;
+  title.textContent = t("thread.empty_title", { name: who() });
   const sub = document.createElement("div");
   sub.className = "empty-sub";
   sub.textContent = modelName
-    ? `Running on ${modelName}. Messages and tool activity will appear here.`
-    : "Messages and tool activity will appear here.";
+    ? t("thread.empty_sub_model", { model: modelName })
+    : t("thread.empty_sub");
   el.append(mark, title, sub);
   threadEl.appendChild(el);
 }
@@ -125,7 +127,7 @@ function attachmentUrl(a) {
 }
 
 export function attachmentLabel(a) {
-  return a.name || a.media_type || "attachment";
+  return a.name || a.media_type || t("thread.attachment");
 }
 
 function humanSize(value) {
@@ -170,16 +172,16 @@ function renderAttachments(container, attachments = [], seq = null) {
       const download = document.createElement("button");
       download.type = "button";
       download.className = "attachment-download";
-      download.textContent = "Download";
+      download.textContent = t("thread.download");
       download.addEventListener("click", async () => {
         if (download.disabled) return;
         download.disabled = true;
         try {
           await attachmentDownloadHandler(seq, index, attachmentLabel(a));
         } catch {
-          download.textContent = "Failed";
+          download.textContent = t("thread.download_failed");
         } finally {
-          if (download.isConnected && download.textContent !== "Failed") {
+          if (download.isConnected && download.textContent !== t("thread.download_failed")) {
             download.disabled = false;
           }
         }
@@ -193,7 +195,7 @@ function renderAttachments(container, attachments = [], seq = null) {
 
 function renderUserBubble(bubble, text, attachments, seq = null) {
   bubble.textContent = "";
-  bubble.appendChild(document.createTextNode(text || "Attached media"));
+  bubble.appendChild(document.createTextNode(text || t("thread.attached_media")));
   renderAttachments(bubble, attachments, seq);
 }
 
@@ -204,11 +206,11 @@ function forkButton(seq, regenerateText = undefined) {
   fork.className = "edit-btn fork-btn";
   fork.title =
     regenerateText === undefined
-      ? "Fork conversation from here"
-      : "Fork and regenerate from this message";
+      ? t("thread.fork_here")
+      : t("thread.fork_regenerate");
   fork.setAttribute("aria-label", fork.title);
   fork.innerHTML =
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v3.2c0 1.3 1 2.3 2.3 2.3h1.2M4 13.5v-3.2C4 9 5 8 6.3 8h4.2M8.5 5l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Fork</span>';
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v3.2c0 1.3 1 2.3 2.3 2.3h1.2M4 13.5v-3.2C4 9 5 8 6.3 8h4.2M8.5 5l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg><span>' + t("thread.fork") + '</span>';
   fork.addEventListener("click", async () => {
     if (!forkHandler || fork.disabled) return;
     fork.disabled = true;
@@ -234,7 +236,7 @@ function startUserEdit(r, bubble, actions, text, attachments, seq) {
   input.className = "user-edit-input";
   input.value = text;
   input.rows = Math.min(8, Math.max(2, text.split("\n").length));
-  input.setAttribute("aria-label", "Edit message");
+  input.setAttribute("aria-label", t("thread.edit_message"));
   bubble.appendChild(input);
   renderAttachments(bubble, attachments, seq);
 
@@ -243,11 +245,11 @@ function startUserEdit(r, bubble, actions, text, attachments, seq) {
   const cancel = document.createElement("button");
   cancel.type = "button";
   cancel.className = "btn";
-  cancel.textContent = "Cancel";
+  cancel.textContent = t("app.cancel");
   const save = document.createElement("button");
   save.type = "button";
   save.className = "btn btn-primary";
-  save.textContent = "Save & regenerate";
+  save.textContent = t("thread.save_regenerate");
   editActions.append(cancel, save);
   r.appendChild(editActions);
 
@@ -292,10 +294,10 @@ export function addUserMessage(text, attachments = [], synthetic = false, seq = 
     edit.hidden = !capabilities.edit_regenerate;
     edit.type = "button";
     edit.className = "edit-btn";
-    edit.title = "Edit message";
-    edit.setAttribute("aria-label", "Edit message");
+    edit.title = t("thread.edit_message");
+    edit.setAttribute("aria-label", t("thread.edit_message"));
     edit.innerHTML =
-      '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.8 2.3l2.9 2.9-7.5 7.5-3.5.6.6-3.5zM9.7 3.4l2.9 2.9" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Edit</span>';
+      '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.8 2.3l2.9 2.9-7.5 7.5-3.5.6.6-3.5zM9.7 3.4l2.9 2.9" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg><span>' + t("thread.edit") + '</span>';
     edit.addEventListener("click", () =>
       startUserEdit(r, bubble, actions, text, attachments, seq),
     );
@@ -312,7 +314,7 @@ function agentRow() {
   const r = row("agent");
   const avatar = document.createElement("div");
   avatar.className = "avatar";
-  avatar.innerHTML = AVATAR_SVG;
+  avatar.innerHTML = agentMark;
   const col = document.createElement("div");
   col.className = "agent-col";
   r.append(avatar, col);
@@ -355,9 +357,9 @@ function appendAgentActions(col, raw, seq = null) {
   const copy = document.createElement("button");
   copy.type = "button";
   copy.className = "copy-btn";
-  copy.title = "Copy message";
+  copy.title = t("thread.copy_message");
   copy.dataset.raw = raw;
-  copy.innerHTML = COPY_ICON_SVG + "<span>Copy</span>";
+  copy.innerHTML = COPY_ICON_SVG + `<span>${t("thread.copy")}</span>`;
   actions.appendChild(copy);
   if (Number.isInteger(seq)) actions.appendChild(forkButton(seq));
   col.appendChild(actions);
@@ -471,7 +473,7 @@ export function addToolCard(id, name, args) {
   body.className = "tool-body";
   const argText =
     args && typeof args === "object" ? JSON.stringify(args, null, 2) : String(args ?? "");
-  if (argText && argText !== "{}") body.appendChild(toolSection("Arguments", argText));
+  if (argText && argText !== "{}") body.appendChild(toolSection(t("tool.arguments"), argText));
 
   card.append(summary, body);
   r.appendChild(card);
@@ -483,19 +485,23 @@ export function addToolCard(id, name, args) {
 export function resolveToolCard(id, name, ok, content, attachments = [], diff = null) {
   // Match by call id; a message without one (older wire shape) falls back to
   // the oldest id-less card with the same name.
-  const idx = pendingTools.findIndex((t) => (id ? t.id === id : t.name === name));
-  let t;
+  const idx = pendingTools.findIndex((pending) =>
+    id ? pending.id === id : pending.name === name,
+  );
+  let card;
   if (idx >= 0) {
-    t = pendingTools.splice(idx, 1)[0];
+    card = pendingTools.splice(idx, 1)[0];
   } else {
     // A result with no visible call (shouldn't happen, but render honestly).
     addToolCard(id, name, null);
-    t = pendingTools.pop();
+    card = pendingTools.pop();
   }
-  t.status.innerHTML = ok ? OK_ICON : ERR_ICON;
-  t.body.appendChild(toolSection(ok ? "Result" : "Error", content, !ok));
-  if (diff) t.body.appendChild(diffView(diff));
-  renderAttachments(t.body, attachments);
+  card.status.innerHTML = ok ? OK_ICON : ERR_ICON;
+  card.body.appendChild(
+    toolSection(ok ? t("tool.result") : t("tool.error"), content, !ok),
+  );
+  if (diff) card.body.appendChild(diffView(diff));
+  renderAttachments(card.body, attachments);
   scrollToBottom();
 }
 
@@ -508,7 +514,7 @@ export function resetPendingTools() {
 export function cancelPendingTools() {
   for (const tool of pendingTools) {
     tool.status.innerHTML = ERR_ICON;
-    tool.body.appendChild(toolSection("Stopped", "Cancelled by user", true));
+    tool.body.appendChild(toolSection(t("tool.stopped"), t("tool.cancelled"), true));
   }
   pendingTools = [];
 }
@@ -527,11 +533,15 @@ export function compactNote(msg) {
   const rounded = Number.isFinite(count) ? Math.max(0, Math.round(count)) : null;
   const label =
     rounded === 1
-      ? "1 earlier message"
-      : `${rounded === null ? "some" : rounded.toLocaleString()} earlier messages`;
-  const before = tokenEstimate(msg.before_tokens);
-  const after = tokenEstimate(msg.after_tokens);
-  return `Context compacted: summarized ${label} (${before} → ${after} tokens).`;
+      ? t("note.compact_one")
+      : rounded === null
+        ? t("note.compact_some")
+        : t("note.compact_many", { count: rounded.toLocaleString() });
+  return t("note.compacted", {
+    label,
+    before: tokenEstimate(msg.before_tokens),
+    after: tokenEstimate(msg.after_tokens),
+  });
 }
 
 export function addNote(kind, text) {
@@ -555,7 +565,7 @@ export function showTyping() {
   const r = row("agent");
   const avatar = document.createElement("div");
   avatar.className = "avatar";
-  avatar.innerHTML = AVATAR_SVG;
+  avatar.innerHTML = agentMark;
   const dots = document.createElement("div");
   dots.className = "typing";
   dots.innerHTML = "<span></span><span></span><span></span>";
@@ -588,7 +598,7 @@ export function appendThinking(delta) {
   if (!thinking) {
     const details = document.createElement("details");
     details.className = "thinking-block";
-    const summary = document.createElement("summary"); summary.textContent = "Thinking";
+    const summary = document.createElement("summary"); summary.textContent = t("thread.thinking");
     thinking = document.createElement("pre"); details.append(summary, thinking);
     row("event").append(details);
   }
@@ -599,9 +609,16 @@ export function appendThinking(delta) {
 export function renderUsage(msg) {
   const chip = $("usage-chip");
   const cost = msg.cost_usd != null ? ` · $${Number(msg.cost_usd).toFixed(4)}` : "";
-  const context = msg.context_pct != null ? ` · ${Number(msg.context_pct).toFixed(0)}% context` : "";
-  chip.textContent = `${Number(msg.input || 0).toLocaleString()} in · ${Number(msg.output || 0).toLocaleString()} out${cost}${context}`;
-  chip.title = `${Number(msg.cached || 0).toLocaleString()} cached tokens`;
+  const context =
+    msg.context_pct != null
+      ? ` · ${t("usage.context", { pct: Number(msg.context_pct).toFixed(0) })}`
+      : "";
+  const tokens = t("usage.tokens", {
+    input: Number(msg.input || 0).toLocaleString(),
+    output: Number(msg.output || 0).toLocaleString(),
+  });
+  chip.textContent = `${tokens}${cost}${context}`;
+  chip.title = t("usage.cached", { count: Number(msg.cached || 0).toLocaleString() });
   chip.hidden = false;
 }
 

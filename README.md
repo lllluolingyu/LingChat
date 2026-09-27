@@ -24,6 +24,21 @@ from `web/fonts/` (and `agentgui/web/fonts/`), so nothing is fetched from a font
 CDN at runtime. Scripts outside the Latin subsets — CJK in particular — fall
 through to the system faces named in `--sans`, `--serif`, and `--mono`.
 
+The AgentGUI interface ships in Chinese and English, **Chinese by default**.
+The language is a per-browser choice stored beside the theme and switched from
+the toggle in the sidebar foot; the string table lives in
+`agentgui/web/js/i18n.js`, keyed with every language beside each string so a
+missing translation shows up in review. Static markup is translated through
+`data-i18n` attributes and everything else through `t()`. `<html lang>` is set
+before first paint, because it decides which CJK face the font stacks fall
+through to. The legacy `lingchat` UI is English only.
+
+Each backend carries its own mark (`agentgui/web/js/marks.js`): a radiating
+asterisk by default, and a six-lobe blossom for GPT-series models — every Codex
+entry, plus any LingCore profile whose name says it fronts one. The mark appears
+on the reply avatar, the empty state, the sidebar badge, and beside the model
+picker, so a GPT model is identifiable before the conversation exists.
+
 Emphasis is deliberate and ordered, loudest first: **main content ≈ input box >
 code / notes > top bar > tool calls > background**. Depth is a hairline and one
 of two short shadows, never a glow, and translucent blurred panels are reserved

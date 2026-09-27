@@ -1493,7 +1493,9 @@ kbd {
  * now, and the dialogs are tokenized rather than near-black hardcodes. */
 
 .backend-badge {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   margin-right: 6px;
   padding: 1px 6px;
   border-radius: 5px;
@@ -1507,6 +1509,51 @@ kbd {
   vertical-align: 1px;
 }
 .session-item.active .backend-badge { color: var(--text-2); }
+/* Sized to the uppercase text beside it, so the mark reads as part of the word
+ * rather than as a second control. */
+.backend-badge svg { width: 9px; height: 9px; }
+
+/* The foot carries two quiet toggles now, theme and language. They share one row
+ * rather than stacking, which would push the session list up by a whole button.
+ * The language button takes only the width of its own name, because that name is
+ * short and fixed ("English" / "中文") while "Light theme" is neither -- an even
+ * split truncated it. The installation-checks button still spans both columns. */
+.sidebar-foot {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+}
+.sidebar-foot > .btn { grid-column: 1 / -1; }
+.theme-toggle { min-width: 0; }
+.theme-toggle > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The picker's mark: the selected model's glyph, beside the <select> because a
+ * native <option> cannot carry one. Same disc as the avatar, so a GPT model is
+ * marked the same way before and after the chat exists. */
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.model-row select {
+  flex: 1;
+  min-width: 0;
+}
+.model-mark {
+  flex-shrink: 0;
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  background: var(--accent-strong);
+  color: #fff;
+  display: grid;
+  place-items: center;
+}
+.model-mark svg { width: 15px; height: 15px; }
 
 .app-dialog {
   color: var(--text);
@@ -1538,6 +1585,16 @@ kbd {
   color: var(--text);
   font: inherit;
 }
+/* The open list is a native popup that paints its options from the select's
+ * fill. That fill is a 4% tint meant for a card, so under the dark theme the
+ * popup comes out a pale sheet behind light text. Options get a solid surface.
+ * Unscoped, so the admin console's pickers are covered by the same rule. */
+select option,
+select optgroup {
+  background-color: var(--surface-fallback);
+  color: var(--text);
+}
+select optgroup { color: var(--text-2); }
 .app-dialog select:focus-visible, .app-dialog input:focus-visible {
   outline: none;
   border-color: color-mix(in srgb, var(--accent) 50%, var(--border-strong));

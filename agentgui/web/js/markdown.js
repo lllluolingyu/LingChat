@@ -1,11 +1,14 @@
 /* Adapted from LingChat; Copyright LingChat contributors; Apache-2.0. */
-// Markdown renderer + copy-button behavior. Pure string → HTML: no module
-// state, no DOM reads — the one module that is unit-testable without a browser.
+// Markdown renderer + copy-button behavior. Pure string → HTML: no DOM reads,
+// and its only module state is the interface language the copy control is
+// labelled in — so it stays testable without a browser.
 //
 // The renderer is hand-rolled and escape-first — every character of model/
 // user/tool text is HTML-escaped before any tags are introduced, links are
 // restricted to http(s), and innerHTML only ever receives this module's own
 // output.
+
+import { t } from "./i18n.js";
 
 const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 export const esc = (s) => s.replace(/[&<>"']/g, (c) => ESC[c]);
@@ -36,9 +39,9 @@ function codeBlockHtml(lang, code) {
   return (
     '<div class="codeblock"><div class="codeblock-head">' +
     `<span class="codeblock-lang">${esc(lang || "text")}</span>` +
-    '<button class="copy-btn" type="button" title="Copy code">' +
+    `<button class="copy-btn" type="button" title="${esc(t("thread.copy_code"))}">` +
     COPY_ICON_SVG +
-    "<span>Copy</span></button></div>" +
+    `<span>${esc(t("thread.copy"))}</span></button></div>` +
     `<pre><code>${esc(code)}</code></pre></div>`
   );
 }
@@ -191,10 +194,10 @@ async function copyText(text, btn) {
   }
   const label = btn.querySelector("span");
   btn.classList.add("copied");
-  if (label) label.textContent = "Copied";
+  if (label) label.textContent = t("thread.copied");
   setTimeout(() => {
     btn.classList.remove("copied");
-    if (label) label.textContent = "Copy";
+    if (label) label.textContent = t("thread.copy");
   }, 1400);
 }
 

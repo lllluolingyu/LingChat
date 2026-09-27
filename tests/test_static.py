@@ -125,3 +125,35 @@ def test_durable_runtime_events_are_replayed_with_history():
     assert 'event.type === "skill_state"' in sessions
     assert "compactNote(event)" in sessions
     assert "byMessage.get(m.seq)" in sessions
+
+
+def test_gpt_models_get_their_own_mark():
+    """A GPT-series model is identified by its own glyph, not the generic one.
+
+    The picker, the session badge and the avatar all draw from one helper, so
+    check the helper's routing and that each surface actually calls it.
+    """
+
+    import agentgui
+
+    web = Path(agentgui.__file__).with_name("web")
+    marks = (web / "js" / "marks.js").read_text(encoding="utf-8")
+    thread = (web / "js" / "thread.js").read_text(encoding="utf-8")
+    sessions = (web / "js" / "sessions.js").read_text(encoding="utf-8")
+    index = (web / "index.html").read_text(encoding="utf-8")
+
+    # Codex only ever serves OpenAI models; a LingCore profile fronting one is
+    # recognised by name instead.
+    assert 'model.backend === "codex"' in marks
+    assert "GPT_MARK" in marks and "AGENT_MARK" in marks
+    # Both marks are drawn in currentColor, so one glyph works on the clay disc
+    # and in a hairline badge without a second copy.
+    assert marks.count('stroke="currentColor"') >= 2
+
+    # The avatar and empty state follow the backend from "hello"...
+    assert "markFor(" in thread and "agentMark" in thread
+    assert "AVATAR_SVG" not in thread, "the fixed avatar constant should be gone"
+    # ...the sidebar badge and the picker resolve it per entry.
+    assert "markFor(s.backend" in sessions
+    assert "syncModelMark" in sessions
+    assert 'id="new-model-mark"' in index

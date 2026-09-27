@@ -10,6 +10,7 @@
 // initConnection() so this module imports nothing that imports it back.
 
 import { abandonStreaming, hideTyping } from "./thread.js";
+import { t } from "./i18n.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -74,18 +75,26 @@ export function initConnection(options) {
 
 // --- status -------------------------------------------------------------------
 
-const STATUS_LABELS = {
-  connected: "Connected",
-  connecting: "Connecting",
-  reconnecting: "Reconnecting",
-  offline: "Offline",
+const STATUS_KEYS = {
+  connected: "conn.connected",
+  connecting: "conn.connecting",
+  reconnecting: "conn.reconnecting",
+  offline: "conn.offline",
 };
 
+let statusState = "connecting";
+
 function setStatus(state) {
+  statusState = state;
   statusPill.dataset.state = state;
-  statusText.textContent = STATUS_LABELS[state];
+  statusText.textContent = t(STATUS_KEYS[state]);
   connBanner.hidden = state !== "reconnecting";
   hooks.onConnectedChange(state === "connected");
+}
+
+// Re-label the pill after a language change without touching the socket.
+export function refreshStatusLabel() {
+  statusText.textContent = t(STATUS_KEYS[statusState]);
 }
 
 export function socketOpen() {
@@ -203,13 +212,13 @@ export function showConfirm(request) {
 function renderConfirm() {
   const item = confirmQueue[0];
   if (!item) { confirmEl.classList.add("hidden"); return; }
-  $("confirm-title").textContent = item.title || "Approve action?";
+  $("confirm-title").textContent = item.title || t("approval.title");
   confirmCmd.textContent = item.detail || "";
   confirmRunner.textContent = item.diff || "";
   confirmRunner.className = "approval-diff";
   confirmRunner.hidden = !item.diff;
   confirmAllowSession.hidden = !item.options?.includes("session");
-  confirmAllowSession.textContent = "Allow for session";
+  confirmAllowSession.textContent = t("approval.allow_session");
   confirmEl.classList.remove("hidden");
   confirmDeny.focus();
 }
