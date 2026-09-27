@@ -8,6 +8,7 @@ import json
 import signal
 import sys
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -117,7 +118,15 @@ class ClaudeBackend(BackendBase):
             if False:
                 yield {}
 
-        transport = GroupTransport(prompt=empty(), options=options)
+        # The SDK adds ``--permission-prompt-tool stdio`` only to the options it
+        # builds *its own* transport from; a custom transport gets them raw, and
+        # without the flag the CLI never asks ``can_use_tool`` -- it denies every
+        # prompt-worthy call outright ("you haven't granted it yet"). Setting it
+        # on the client's options too would trip the SDK's mutual-exclusion check.
+        transport = GroupTransport(
+            prompt=empty(),
+            options=replace(options, permission_prompt_tool_name="stdio"),
+        )
         self.client = ClaudeSDKClient(options=options, transport=transport)
         await self.client.connect()
 
@@ -126,8 +135,8 @@ class ClaudeBackend(BackendBase):
     ) -> PermissionResultAllow | PermissionResultDeny:
         kind = tool_kind(name)
         # Both levels reach the approval path: under ``ask`` a write is something
-        # the user may grant, not something refused on their behalf. Reads never
-        # arrive here — ``default`` mode allows them without consulting us.
+        # the user may grant, not something refused on their behalf. Local reads
+        # never arrive here, but WebFetch and WebSearch do under both modes.
         # Exact command / path scope is conservative: compound commands never
         # inherit authorization from a shared first word such as `python`.
         scope = str(

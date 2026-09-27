@@ -63,6 +63,9 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ### Fixed
 
+- AgentGUI's Claude sessions raise an approval for WebSearch, WebFetch, writes
+  and commands again. The custom transport never passed
+  `--permission-prompt-tool stdio`, so the CLI denied them itself without asking.
 - Browser connections deep-copy nested tool options so a session allowlist can
   never leak into another connection through the shared profile.
 

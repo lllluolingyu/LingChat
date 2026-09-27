@@ -61,6 +61,11 @@ for line in sys.stdin:
             continue
         inputs = {"file_path": "hello.txt", "old_string": "before\n", "new_string": "after\n"}
         emit({"type": "assistant", "message": {"role": "assistant", "model": "fake", "content": [{"type": "tool_use", "id": "call-1", "name": "Edit", "input": inputs}]}})
+        # Like the real CLI: with no prompt tool it denies on its own, and the
+        # SDK's can_use_tool callback is never consulted.
+        if "--permission-prompt-tool" not in sys.argv:
+            finish(False)
+            continue
         emit({"type": "control_request", "request_id": "permission", "request": {"subtype": "can_use_tool", "tool_name": "Edit", "tool_use_id": "call-1", "input": inputs}})
     elif kind == "control_response" and message["response"]["request_id"] == "permission":
         finish(message["response"].get("response", {}).get("behavior") == "allow")
