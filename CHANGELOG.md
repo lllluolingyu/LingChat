@@ -5,6 +5,8 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-29
+
 ### Added
 
 - An interface language for the AgentGUI browser UI, in Chinese and English,
@@ -37,6 +39,14 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ### Changed
 
+- **AgentGUI session autonomy has two levels, `ask` and `edit`**, defined the
+  same way for every backend. `ask` reads freely and raises an approval for
+  every write or command; `edit` writes the workspace silently and still asks
+  before leaving it (Codex moves from `approvalPolicy: never` to `on-request`).
+  Stored `read-only` sessions become `ask` and `auto-edit` sessions become
+  `edit` when the store opens. On LingCore, `ask` is a tool ceiling with
+  `run_shell` as the approvable way to act, and clears the profile's
+  `skill_gated_tools`.
 - **AgentGUI now opens in Chinese.** English remains one click away in the
   sidebar foot, and the choice persists per browser. Only the interface is
   translated: model labels, backend names, workspace paths and agent output are
@@ -139,4 +149,6 @@ Notable user-facing LingChat changes are documented here. The project follows
 - Initial browser frontend with authenticated WebSocket streaming, tool
   confirmation, multimodal attachments, and profile-scoped session history.
 
+[Unreleased]: https://github.com/lllluolingyu/LingChat/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/lllluolingyu/LingChat/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/lllluolingyu/LingChat/releases/tag/v0.2.0

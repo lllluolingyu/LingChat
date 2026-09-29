@@ -1,6 +1,6 @@
 [project]
 name = "lingchat"
-version = "0.2.0"
+version = "0.3.0"
 description = "Web UI front-end for LingCore agents"
 readme = "README.md"
 license = { file = "LICENSE" }
