@@ -10,10 +10,12 @@ import { markFor } from "./marks.js";
 import {
   addAgentMarkdown,
   addNote,
+  addTodoCard,
   addToolCard,
   addUserMessage,
   clearThread,
   appendThinking,
+  todoCounts,
   renderUsage,
   resetPendingTools,
   resolveToolCard,
@@ -312,6 +314,12 @@ function renderHistory(turns) {
           flush(); resolveToolCard(frame.id, frame.name, frame.ok, frame.content || "", frame.attachments || [], frame.diff); break;
         case "final": if (!sawText && frame.content) text = frame.content; break;
         case "usage": renderUsage(frame); break;
+        case "todos": {
+          flush();
+          const { done, total } = todoCounts(frame.todos);
+          addTodoCard(frame.todos, total ? t("todo.title", { done, total }) : t("todo.cleared"));
+          break;
+        }
         case "error": flush(); addNote("error", frame.message); break;
         case "cancelled": flush(); addNote("system", frame.reason || t("note.stopped")); break;
         case "notice":

@@ -123,6 +123,7 @@ def test_durable_runtime_events_are_replayed_with_history():
     assert "data.events || []" in sessions
     assert 'event.type === "compact"' in sessions
     assert 'event.type === "skill_state"' in sessions
+    assert 'event.type === "todos"' in sessions
     assert "compactNote(event)" in sessions
     assert "byMessage.get(m.seq)" in sessions
 

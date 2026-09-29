@@ -5,6 +5,22 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- LingCore's `todo_write` checklist renders in both browser UIs as an inline
+  card: a `todos` frame live, and `todos` replay events (from `todo_state`
+  session events) in transcript history. AgentGUI's history rebuild maps the
+  event to the same frame instead of a raw notice. The card title is
+  translated (`todo.title`, `todo.cleared`) and item text is inserted as text,
+  never markup. `todo_write` stays available in AgentGUI's `ask` mode, since it
+  only rewrites the agent's own in-memory checklist.
+
+### Changed
+
+- Both servers still start against LingCore 0.3.0, the declared minimum. The
+  todo imports go through a small `_compat` shim, and without `todo_write` in
+  the core no checklist is rendered.
+
 ## [0.3.0] - 2026-09-29
 
 ### Added

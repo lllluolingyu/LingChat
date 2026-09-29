@@ -522,6 +522,42 @@ export function compactNote(msg) {
   return `Context compacted: summarized ${label} (${before} → ${after} tokens).`;
 }
 
+// A todo_write checklist. Content is model text: rendered via textContent only.
+const TODO_MARKS = { completed: "✓", in_progress: "▸", pending: "○" };
+
+export function addTodoCard(todos, title) {
+  const r = row("event");
+  const card = document.createElement("div");
+  card.className = "note todos";
+  const head = document.createElement("div");
+  head.className = "todos-head";
+  head.textContent = title;
+  card.appendChild(head);
+  const list = document.createElement("ul");
+  list.className = "todos-list";
+  for (const item of Array.isArray(todos) ? todos : []) {
+    const status = TODO_MARKS[item?.status] ? item.status : "pending";
+    const li = document.createElement("li");
+    li.className = `todo ${status}`;
+    const mark = document.createElement("span");
+    mark.className = "todo-mark";
+    mark.setAttribute("aria-hidden", "true");
+    mark.textContent = TODO_MARKS[status];
+    const text = document.createElement("span");
+    text.textContent = String(item?.content ?? "");
+    li.append(mark, text);
+    list.appendChild(li);
+  }
+  card.appendChild(list);
+  r.appendChild(card);
+  scrollToBottom();
+}
+
+export function todoCounts(todos) {
+  const items = Array.isArray(todos) ? todos : [];
+  return { done: items.filter((i) => i?.status === "completed").length, total: items.length };
+}
+
 export function addNote(kind, text) {
   const r = row("event");
   const note = document.createElement("div");

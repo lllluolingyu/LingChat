@@ -206,6 +206,8 @@ const STRINGS = {
     zh: "这个会话已在另一个标签页打开 — 请关闭那边，或选择其他会话。",
   },
   "note.skill_on": { en: "Skill activated: {name}", zh: "已启用技能：{name}" },
+  "todo.title": { en: "Todos {done}/{total}", zh: "待办 {done}/{total}" },
+  "todo.cleared": { en: "Todo list cleared", zh: "待办已清空" },
   "note.skill_off": { en: "Skill deactivated: {name}", zh: "已停用技能：{name}" },
   "note.retry": {
     en: "{reason}; retrying ({attempt}/{max})",

@@ -48,6 +48,8 @@ import {
   removeStreamingMessage,
   setEditHandler,
   setForkHandler,
+  addTodoCard,
+  todoCounts,
 } from "./thread.js";
 
 const $ = (id) => document.getElementById(id);
@@ -176,6 +178,11 @@ function handle(msg) {
     case "skill":
       addNote("skill", `Skill ${msg.active ? "activated" : "deactivated"}: ${msg.name}`);
       break;
+    case "todos": {
+      const { done, total } = todoCounts(msg.todos);
+      addTodoCard(msg.todos, total ? `Todos ${done}/${total}` : "Todo list cleared");
+      break;
+    }
     case "compact":
       finalizeAgentMessage();
       addNote("compact", compactNote(msg));

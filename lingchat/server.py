@@ -86,6 +86,8 @@ from lingcore.sessions import (
 from lingcore.tools.builtin.shell import allowlist_pattern_for
 from pydantic import BaseModel, Field, StrictInt
 
+from lingchat._compat import TodoUpdated, todos_from_payload
+
 
 def _find_web_dir() -> Path:
     """Locate the static UI: ``lingchat/web`` in an installed wheel (the build
@@ -193,6 +195,8 @@ def _event_to_msg(event: AgentEvent) -> dict[str, Any]:
                 "cached": usage.cached_input_tokens,
                 "reasoning": usage.reasoning_tokens,
             }
+        case TodoUpdated(todos):
+            return {"type": "todos", "todos": [item.model_dump() for item in todos]}
         case TurnCancelled(reason):
             return {"type": "cancelled", "reason": reason}
         case Final(content):
@@ -276,6 +280,15 @@ def _stored_event_to_display(event: SessionEvent) -> dict[str, Any] | None:
                 return None
             state[key] = list(dict.fromkeys(value))
         return {**base, "type": "skill_state", **state}
+    if event.kind == "todo_state":
+        todos = todos_from_payload(event.payload)
+        if todos is None:
+            return None
+        return {
+            **base,
+            "type": "todos",
+            "todos": [item.model_dump() for item in todos],
+        }
     return None
 
 

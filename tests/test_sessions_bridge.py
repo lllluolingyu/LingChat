@@ -711,3 +711,34 @@ def test_fork_endpoint_preserves_source_and_supports_regeneration(tmp_path):
         "original second answer" not in content for content in regenerated_context
     )
     assert fake.calls[2][-1].attachments[0].name == "branch.png"
+
+
+def test_todo_checklist_streams_and_replays(tmp_path):
+    profile = _write_profile(tmp_path, tools="['todo_write']")
+    write = ToolCall(
+        id="plan",
+        name="todo_write",
+        arguments={
+            "todos": [
+                {"content": "inspect", "status": "completed"},
+                {"content": "fix", "status": "in_progress"},
+            ]
+        },
+    )
+    fakes = [FakeLLM([{"tool_calls": [write]}, {"text": "working"}])]
+    app = create_app(profile, require_auth=False, llm_factory=lambda: fakes.pop(0))
+    client = TestClient(app)
+
+    expected = [
+        {"content": "inspect", "status": "completed"},
+        {"content": "fix", "status": "in_progress"},
+    ]
+    with client.websocket_connect("/ws") as ws:
+        sid = ws.receive_json()["session"]
+        ws.send_json({"type": "user", "text": "plan it"})
+        frames = _drain_until(ws, "turn_end")
+    assert {"type": "todos", "todos": expected} in frames
+
+    transcript = client.get(f"/api/sessions/{sid}").json()
+    todo_events = [e for e in transcript["events"] if e["type"] == "todos"]
+    assert [e["todos"] for e in todo_events] == [expected]

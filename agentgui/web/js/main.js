@@ -63,7 +63,14 @@ import {
   removeStreamingMessage,
   setEditHandler,
   setForkHandler,
+  addTodoCard,
+  todoCounts,
 } from "./thread.js";
+
+function todoTitle(todos) {
+  const { done, total } = todoCounts(todos);
+  return total ? t("todo.title", { done, total }) : t("todo.cleared");
+}
 
 const $ = (id) => document.getElementById(id);
 
@@ -205,6 +212,9 @@ function handle(msg) {
       break;
     case "skill":
       addNote("skill", t(msg.active ? "note.skill_on" : "note.skill_off", { name: msg.name }));
+      break;
+    case "todos":
+      addTodoCard(msg.todos, todoTitle(msg.todos));
       break;
     case "compact":
       finalizeAgentMessage();

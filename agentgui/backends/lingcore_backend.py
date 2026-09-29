@@ -29,6 +29,7 @@ from lingcore.message import UserInput
 from lingcore.sessions import SessionStore, new_session_id, open_store
 from lingcore.tools.builtin.shell import allowlist_pattern_for
 
+from agentgui._compat import TodoUpdated, todos_from_payload
 from agentgui.attachments import attachment_payloads
 from agentgui.protocol import ApprovalRequest, Frame, frame, tool_kind
 from agentgui.store import SessionRecord, Store
@@ -84,6 +85,8 @@ def event_frame(event: Any) -> Frame:
             return frame("error", message=message)
         case TurnCancelled(reason):
             return frame("cancelled", reason=reason)
+        case TodoUpdated(todos):
+            return frame("todos", todos=[item.model_dump() for item in todos])
         case SkillActivated(name, active):
             return frame(
                 "notice",
@@ -167,6 +170,8 @@ class LingCoreBackend(BackendBase):
                 "web_search",
                 "fetch_url",
                 "run_shell",
+                # Only rewrites the agent's own in-memory checklist.
+                "todo_write",
             }
             self.profile.tools = [name for name in self.profile.tools if name in safe]
             # Skills stay: ``SkillState.effective_tools`` is ceiling ∩ requested, so
@@ -318,14 +323,25 @@ class LingCoreBackend(BackendBase):
                     }
                 )
             for event in events:
-                if event.message_seq == record.seq:
-                    frames.append(
-                        {
-                            "type": "notice",
-                            "level": "info",
-                            "text": f"{event.kind}: {event.payload}",
-                        }
-                    )
+                if event.message_seq != record.seq:
+                    continue
+                if event.kind == "todo_state":
+                    todos = todos_from_payload(event.payload)
+                    if todos is not None:
+                        frames.append(
+                            {
+                                "type": "todos",
+                                "todos": [item.model_dump() for item in todos],
+                            }
+                        )
+                    continue
+                frames.append(
+                    {
+                        "type": "notice",
+                        "level": "info",
+                        "text": f"{event.kind}: {event.payload}",
+                    }
+                )
             frames.extend(f for f in old_status.get(record.seq, []) if f not in frames)
             turns.append({"seq": record.seq, "role": m.role, "frames": frames})
         self.store.replace_turns(self.session.id, turns)

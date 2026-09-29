@@ -7,10 +7,12 @@ import { api, reconnectNow } from "./connection.js";
 import {
   addAgentMarkdown,
   addNote,
+  addTodoCard,
   addToolCard,
   addUserMessage,
   clearThread,
   compactNote,
+  todoCounts,
   resetPendingTools,
   resolveToolCard,
   scrollToBottom,
@@ -275,6 +277,11 @@ async function fetchHistory(id, gen) {
 function renderReplayEvent(event) {
   if (event.type === "compact") {
     addNote("compact", compactNote(event));
+    return;
+  }
+  if (event.type === "todos") {
+    const { done, total } = todoCounts(event.todos);
+    addTodoCard(event.todos, total ? `Todos ${done}/${total}` : "Todo list cleared");
     return;
   }
   if (event.type === "skill_state") {

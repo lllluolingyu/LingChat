@@ -1077,6 +1077,13 @@ main#messages {
 .note.compact { color: var(--text-2); border-color: color-mix(in srgb, var(--accent) 22%, transparent); background: color-mix(in srgb, var(--accent-soft) 58%, var(--glass-bg)); }
 .note.error { color: var(--err); border-color: color-mix(in srgb, var(--err) 25%, transparent); background: color-mix(in srgb, var(--err-soft) 78%, var(--glass-bg)); }
 .note.system { justify-content: center; color: var(--muted-solid); border-style: dashed; background: var(--glass-bg-subtle); }
+.note.todos { display: block; }
+.note.todos .todos-head { color: var(--muted-solid); font-size: 12px; margin-bottom: 4px; }
+.note.todos .todos-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.note.todos .todo { display: flex; gap: 8px; align-items: baseline; }
+.note.todos .todo-mark { flex-shrink: 0; width: 1em; text-align: center; }
+.note.todos .todo.completed { color: var(--muted-solid); text-decoration: line-through; }
+.note.todos .todo.in_progress { color: var(--text); font-weight: 600; }
 
 /* --------------------------------------------------------- typing indicator */
 
