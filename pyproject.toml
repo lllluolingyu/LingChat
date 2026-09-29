@@ -17,7 +17,7 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-    "lingcore>=0.2.0,<0.4.0",
+    "lingcore>=0.3.0,<0.4.0",
     "fastapi==0.139.2",
     "uvicorn[standard]==0.51.0",
 ]

@@ -84,9 +84,9 @@ and is never authoritative for billing.
 
 ## Install and run
 
-This checkout requires Python 3.11 or newer and supports LingCore 0.2.x and
-0.3.x (`lingcore>=0.2.0,<0.4.0`). A packaged installation resolves the
-compatible core automatically:
+This checkout requires Python 3.11 or newer and LingCore 0.3.x
+(`lingcore>=0.3.0,<0.4.0`). A packaged installation resolves the compatible
+core automatically:
 
 ```bash
 pip install lingchat

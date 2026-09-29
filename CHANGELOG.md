@@ -67,8 +67,8 @@ Notable user-facing LingChat changes are documented here. The project follows
   `--surface` and `--surface-floating`. Both themes are still driven entirely
   from these, so a consumer that only references tokens picks the new look up
   untouched.
-- Compatibility now covers `lingcore>=0.2.0,<0.4.0`, including the upcoming
-  LingCore 0.3 line.
+- Requires `lingcore>=0.3.0,<0.4.0`: usage reporting depends on LingCore
+  0.3's `UsageReported` event, `Agent.drain_usage()`, and `lingcore.usage`.
 - Claude Code support is available through the optional `lingchat[claude]`
   extra; LingCore and Codex remain available from the base installation.
 - CI tests against LingCore `main` instead of the 0.2.0 release commit, and now
