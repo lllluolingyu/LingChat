@@ -198,7 +198,7 @@ function handle(msg) {
       break;
     case "confirm":
       hideTyping();
-      showConfirm(msg.command, msg.id, msg.allowlist_pattern, msg.runner);
+      showConfirm(msg.command, msg.id, msg.allowlist_pattern, msg.runner, msg.kind);
       break;
     case "shell_allowlist":
       if (msg.added && msg.pattern) {

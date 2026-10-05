@@ -17,6 +17,8 @@ const statusText = $("status-text");
 const connBanner = $("conn-banner");
 const confirmEl = $("confirm");
 const confirmCmd = $("confirm-cmd");
+const confirmTitle = $("confirm-title");
+const confirmSub = $("confirm-sub");
 const confirmRunner = $("confirm-runner");
 const confirmAllow = $("confirm-allow");
 const confirmAllowSession = $("confirm-allow-session");
@@ -190,10 +192,10 @@ export function suspendReconnect() {
 // Confirmations are queued: parallel tool calls can request several at once,
 // each with its own id, and we resolve them one modal at a time by id so an
 // approval is never misrouted to the wrong command.
-let confirmQueue = []; // [{command, id, pattern, runner}]
+let confirmQueue = []; // [{command, id, pattern, runner, kind}]
 
-export function showConfirm(command, id, pattern = null, runner = "") {
-  confirmQueue.push({ command, id, pattern, runner });
+export function showConfirm(command, id, pattern = null, runner = "", kind = "shell") {
+  confirmQueue.push({ command, id, pattern, runner, kind });
   if (confirmQueue.length === 1) renderConfirm();
 }
 
@@ -203,6 +205,11 @@ function renderConfirm() {
     confirmEl.classList.add("hidden");
     return;
   }
+  const shell = item.kind !== "action";
+  confirmTitle.textContent = shell ? "Run shell command?" : "Approve action?";
+  confirmSub.textContent = shell
+    ? "The agent wants to execute this in the workspace."
+    : "The agent needs your approval to continue.";
   confirmCmd.textContent = item.command;
   confirmRunner.textContent = item.runner ? `Runner: ${item.runner}` : "";
   confirmRunner.hidden = !item.runner;

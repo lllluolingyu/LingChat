@@ -17,6 +17,14 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ### Changed
 
+- A confirmation that is not one of the turn's `run_shell` commands gets a
+  plain "Approve action?" modal instead of the shell one: no runner line, no
+  session allowlist, and the subtitle no longer claims the agent wants to
+  execute it in the workspace. Covers LingCore's `fetch_url` asking before a
+  local/non-public target, a skill activation, and an external agent's write
+  mode. The `confirm` frame carries `kind` (`shell` or `action`) and only
+  shell prompts carry `runner`; a client that predates the field defaults to
+  the shell presentation it already had.
 - Both servers still start against LingCore 0.3.0, the declared minimum. The
   todo imports go through a small `_compat` shim, and without `todo_write` in
   the core no checklist is rendered.

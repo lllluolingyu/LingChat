@@ -408,12 +408,17 @@ class WebSession:
         cid = uuid.uuid4().hex
         self._pending_confirms[cid] = _PendingConfirm(future=fut, command=command)
         pattern = self._allowlist_pattern(command)
+        # Only this turn's run_shell commands are shell prompts; anything else
+        # (a non-public fetch, a skill activation) is a plain approval.
+        shell = command in self._turn_shell_commands
         message: dict[str, Any] = {
             "type": "confirm",
             "id": cid,
             "command": command,
-            "runner": shell_runner_label(self._tool_options),
+            "kind": "shell" if shell else "action",
         }
+        if shell:
+            message["runner"] = shell_runner_label(self._tool_options)
         if pattern is not None:
             message["allowlist_pattern"] = pattern
         await self.ws.send_json(message)

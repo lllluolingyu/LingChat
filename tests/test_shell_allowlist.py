@@ -94,6 +94,7 @@ def test_session_approval_skips_the_next_identical_confirmation(tmp_path):
         ws.receive_json()
         ws.send_json({"type": "user", "text": "first"})
         confirm = _confirm(ws)
+        assert confirm["kind"] == "shell"
         assert confirm["runner"] == "host (unsandboxed)"
         assert confirm["allowlist_pattern"] == "printf ok"
         ws.send_json(
@@ -283,3 +284,37 @@ def test_skill_confirmation_never_offers_a_shell_allowlist(tmp_path):
         )
         frames = _receive_until(ws, "turn_end")
         assert {"type": "shell_allowlist", "pattern": None, "added": False} in frames
+
+
+def test_non_shell_confirmation_is_a_plain_action(tmp_path):
+    # fetch_url asks before a local target. That prompt is not a run_shell
+    # command, so it carries no runner and offers no session allowlist.
+    profile = _write_shell_profile(tmp_path)
+    profile.write_text(
+        profile.read_text(encoding="utf-8").replace(
+            "tools: [run_shell]", "tools: [run_shell, fetch_url]"
+        ),
+        encoding="utf-8",
+    )
+    fetch = ToolCall(
+        id="call-0", name="fetch_url", arguments={"url": "http://localhost:9/"}
+    )
+    app = create_app(
+        profile,
+        require_auth=False,
+        llm_factory=lambda: FakeLLM([{"tool_calls": [fetch]}, {"text": "done"}]),
+    )
+
+    with TestClient(app).websocket_connect("/ws") as ws:
+        ws.receive_json()
+        ws.send_json({"type": "user", "text": "fetch"})
+        confirm = _confirm(ws)
+        assert confirm["kind"] == "action"
+        assert "localhost" in confirm["command"]
+        assert "runner" not in confirm
+        assert "allowlist_pattern" not in confirm
+        ws.send_json(
+            {"type": "confirm_response", "id": confirm["id"], "approved": False}
+        )
+        frames = _receive_until(ws, "turn_end")
+        assert not any(frame["type"] == "shell_allowlist" for frame in frames)

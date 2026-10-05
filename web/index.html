@@ -108,7 +108,7 @@
     </form>
   </div>
 
-  <!-- Inline shell-confirmation prompt, shown only when the agent asks. -->
+  <!-- Inline confirmation prompt (shell command or other action), shown only when the agent asks. -->
   <div id="confirm" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
     <div class="modal-card">
       <div class="modal-head">
@@ -117,7 +117,7 @@
         </span>
         <div>
           <div id="confirm-title" class="modal-title">Run shell command?</div>
-          <div class="modal-sub">The agent wants to execute this in the workspace.</div>
+          <div id="confirm-sub" class="modal-sub">The agent wants to execute this in the workspace.</div>
           <div id="confirm-runner" class="modal-runner"></div>
         </div>
       </div>
