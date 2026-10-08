@@ -5,6 +5,8 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-08
+
 ### Added
 
 - LingCore's `todo_write` checklist renders in both browser UIs as an inline
@@ -173,6 +175,7 @@ Notable user-facing LingChat changes are documented here. The project follows
 - Initial browser frontend with authenticated WebSocket streaming, tool
   confirmation, multimodal attachments, and profile-scoped session history.
 
-[Unreleased]: https://github.com/lllluolingyu/LingChat/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/lllluolingyu/LingChat/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/lllluolingyu/LingChat/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/lllluolingyu/LingChat/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/lllluolingyu/LingChat/releases/tag/v0.2.0
