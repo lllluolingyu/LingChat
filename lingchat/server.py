@@ -58,6 +58,7 @@ from lingcore.events import (
     Compacted,
     Error,
     Final,
+    PluginNotice,
     SkillActivated,
     StreamRetry,
     TextDelta,
@@ -76,6 +77,7 @@ from lingcore.media_types import (
     sanitize_name,
 )
 from lingcore.message import Attachment, Message, UserInput
+from lingcore.plugins.commands import CommandCatalog
 from lingcore.sessions import (
     SessionEvent,
     SessionStore,
@@ -166,6 +168,14 @@ def _event_to_msg(event: AgentEvent) -> dict[str, Any]:
                 "ok": result.ok,
                 "content": result.content,
                 "attachments": _attachment_payloads(result.attachments),
+            }
+        case PluginNotice(plugin, hook, action, message):
+            return {
+                "type": "plugin_notice",
+                "plugin": plugin,
+                "hook": hook,
+                "action": action,
+                "message": message,
             }
         case SkillActivated(name, active):
             return {"type": "skill", "name": name, "active": active}
@@ -468,11 +478,19 @@ class WebSession:
             )
         pending.future.set_result(approved)
 
+    def _resolve_input(self, incoming: UserInput) -> UserInput:
+        catalog = getattr(self.agent, "commands", CommandCatalog())
+        expanded = catalog.resolve(incoming.text, reserved=())
+        if expanded is None:
+            return incoming
+        expanded.attachments = incoming.attachments
+        return expanded
+
     def spawn_turn(self, incoming: UserInput) -> bool:
         """Launch one turn, refusing to queue behind an active turn."""
         if self._turn_task is not None and not self._turn_task.done():
             return False
-        task = asyncio.create_task(self._run_turn(incoming))
+        task = asyncio.create_task(self._run_turn(self._resolve_input(incoming)))
         self._turn_task = task
         self._turn_terminal = False
         self._tasks.add(task)
@@ -500,11 +518,16 @@ class WebSession:
         # cancel_turn() succeeds only after Agent acquired its checkpoint. An
         # immediate Stop can cancel this wrapper before that point; there is no
         # Agent state to finalize, but it is still a successful UI cancellation.
+        notices: list[PluginNotice] = getattr(
+            self.agent, "drain_plugin_notices", lambda: []
+        )()
         event: AgentEvent = (
             self.agent.finalize_cancelled_turn()
             if agent_turn_started
             else TurnCancelled()
         )
+        for pending in [*getattr(self.agent, "drain_usage", lambda: [])(), *notices]:
+            await self._safe_send(_event_to_msg(pending))
         await self._safe_send(_event_to_msg(event))
         await self._safe_send({"type": "turn_end"})
         return True
@@ -522,8 +545,20 @@ class WebSession:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        notices: list[PluginNotice] = getattr(
+            self.agent, "drain_plugin_notices", lambda: []
+        )()
         if agent_turn_started and any(task.cancelled() for task in tasks):
-            self.agent.finalize_cancelled_turn()
+            terminal = self.agent.finalize_cancelled_turn()
+            for pending in [
+                *getattr(self.agent, "drain_usage", lambda: [])(),
+                *notices,
+                terminal,
+            ]:
+                await self._safe_send(_event_to_msg(pending))
+        close = getattr(self.agent, "aclose", None)
+        if close is not None:
+            await close()
 
     async def _run_turn(self, incoming: UserInput) -> None:
         # Serialize turns so one connection's runs share memory safely.
@@ -611,7 +646,11 @@ class WebSession:
         # Rehydrate from the surviving branch while reusing the same model
         # client and per-session tool options. LingCore restores any surviving
         # compaction snapshot and dynamic-skill state during this rebuild.
-        self.agent = self._build_agent(llm=self.agent.llm)
+        previous = self.agent
+        self.agent = self._build_agent(llm=previous.llm)
+        close = getattr(previous, "aclose", None)
+        if close is not None:
+            await close()
         await self._safe_send({"type": "edit_accepted", "seq": seq, "text": text})
         incoming = UserInput(text=text, attachments=original.attachments)
         if not self.spawn_turn(incoming):  # defensive; reader is serialized
@@ -635,6 +674,9 @@ class WebSession:
         await self.ws.send_json(
             {
                 "type": "hello",
+                "commands": getattr(
+                    self.agent, "commands", CommandCatalog()
+                ).metadata(),
                 "agent": self.profile.name,
                 "model": self.profile.llm.model,
                 "workspace": str(self.agent.tool_ctx.workspace),

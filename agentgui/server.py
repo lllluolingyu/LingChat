@@ -117,7 +117,12 @@ class ChatConnection:
         wire = value if isinstance(value, dict) else value.to_wire()
         if transcript and self.seq is not None:
             self.persist(wire)
-        if transcript and wire["type"] in {"error", "cancelled", "notice"}:
+        if transcript and wire["type"] in {
+            "error",
+            "cancelled",
+            "notice",
+            "plugin_notice",
+        }:
             self.transient.append(wire)
         if self.closed:
             return
@@ -178,6 +183,7 @@ class ChatConnection:
                 autonomy=self.session.autonomy,
                 title=self.session.title,
                 capabilities=self.backend.capabilities.to_wire(),
+                commands=getattr(self.backend, "commands_metadata", lambda: [])(),
                 limits={
                     "max_attachments": MAX_ATTACHMENTS,
                     "image_max_bytes": IMAGE_MAX_BYTES,

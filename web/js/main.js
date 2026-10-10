@@ -126,10 +126,52 @@ function reloadTranscript(note = null) {
     });
 }
 
+
+// Suggestions come from the active server runtime; expansion stays server-side.
+let commandMetadata = [];
+const commandSuggestions = document.createElement("div");
+commandSuggestions.setAttribute("role", "listbox");
+commandSuggestions.setAttribute("aria-label", "Commands");
+commandSuggestions.hidden = true;
+commandSuggestions.className = "attachment-tray";
+inputEl.parentElement.before(commandSuggestions);
+function updateCommandSuggestions() {
+  commandSuggestions.replaceChildren();
+  const raw = inputEl.value;
+  const matches = raw.startsWith("/") && !/\s/.test(raw)
+    ? commandMetadata.filter(command => command.name.startsWith(raw)).slice(0, 12)
+    : [];
+  commandSuggestions.hidden = !matches.length;
+  for (const command of matches) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "attachment-chip";
+    button.setAttribute("role", "option");
+    button.textContent = `${command.name} ${command.argument_hint || ""} — ${command.description || ""}`;
+    button.addEventListener("click", () => {
+      inputEl.value = command.name + " ";
+      updateCommandSuggestions();
+      inputEl.focus();
+      autosize();
+      updateSendState();
+    });
+    commandSuggestions.appendChild(button);
+  }
+}
+inputEl.addEventListener("input", updateCommandSuggestions);
+inputEl.addEventListener("keydown", event => {
+  if (event.key === "Tab" && !commandSuggestions.hidden) {
+    event.preventDefault();
+    commandSuggestions.firstElementChild?.click();
+  }
+});
+
 function handle(msg) {
   switch (msg.type) {
     case "hello": {
       updateLimits(msg.limits);
+      commandMetadata = Array.isArray(msg.commands) ? msg.commands : [];
+      updateCommandSuggestions();
       const agentName = msg.agent || "the agent";
       setAgentIdentity(agentName, msg.model || "");
       agentChip.textContent = `${msg.agent} · ${msg.model}`;
@@ -174,6 +216,9 @@ function handle(msg) {
     case "tool_result":
       resolveToolCard(msg.id, msg.name, msg.ok, msg.content, msg.attachments || []);
       showTyping(); // the model is reading the result
+      break;
+    case "plugin_notice":
+      addNote("system", `Plugin ${msg.plugin} · ${msg.hook} · ${msg.action}: ${msg.message}`);
       break;
     case "skill":
       addNote("skill", `Skill ${msg.active ? "activated" : "deactivated"}: ${msg.name}`);
@@ -389,11 +434,11 @@ function renderAttachmentTray() {
 }
 
 function send() {
-  const text = inputEl.value.trim();
+  const text = inputEl.value;
   if (
     turnActive ||
     transcriptSyncing ||
-    (!text && !pendingAttachments.length) ||
+    (!text.trim() && !pendingAttachments.length) ||
     !socketOpen()
   ) return;
   const attachments = pendingAttachments;
@@ -403,6 +448,7 @@ function send() {
   finalizeAgentMessage();
   stickToBottom();
   inputEl.value = "";
+  updateCommandSuggestions();
   pendingAttachments = [];
   renderAttachmentTray();
   autosize();

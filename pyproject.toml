@@ -1,6 +1,6 @@
 [project]
 name = "lingchat"
-version = "0.3.1"
+version = "0.4.0"
 description = "Web UI front-end for LingCore agents"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -17,7 +17,7 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-    "lingcore>=0.3.0,<0.4.0",
+    "lingcore>=0.4.0,<0.5.0",
     "fastapi==0.139.2",
     "uvicorn[standard]==0.51.0",
 ]

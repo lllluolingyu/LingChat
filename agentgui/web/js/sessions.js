@@ -322,6 +322,8 @@ function renderHistory(turns) {
         }
         case "error": flush(); addNote("error", frame.message); break;
         case "cancelled": flush(); addNote("system", frame.reason || t("note.stopped")); break;
+        case "plugin_notice":
+          flush(); addNote("system", `Plugin ${frame.plugin} · ${frame.hook} · ${frame.action}: ${frame.message}`); break;
         case "notice":
           if (frame.discarded_chars) text = "";
           flush(); addNote(frame.level === "warning" ? "error" : "system", frame.text); break;

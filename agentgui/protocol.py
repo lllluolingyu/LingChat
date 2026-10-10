@@ -67,3 +67,10 @@ def tool_kind(name: str) -> str:
     if key in {"webfetch", "websearch", "websearchcall", "web_search", "fetch_url"}:
         return "web"
     return "other"
+
+
+def plugin_notice(plugin: str, hook: str, action: str, message: str) -> Frame:
+    """Visible plugin policy event shared with LingCore frontends."""
+    return frame(
+        "plugin_notice", plugin=plugin, hook=hook, action=action, message=message
+    )

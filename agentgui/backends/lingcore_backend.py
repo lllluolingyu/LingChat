@@ -17,6 +17,7 @@ from lingcore.events import (
     Compacted,
     Error,
     Final,
+    PluginNotice,
     SkillActivated,
     StreamRetry,
     TextDelta,
@@ -26,12 +27,13 @@ from lingcore.events import (
     UsageReported,
 )
 from lingcore.message import UserInput
+from lingcore.plugins.commands import CommandCatalog
 from lingcore.sessions import SessionStore, new_session_id, open_store
 from lingcore.tools.builtin.shell import allowlist_pattern_for
 
 from agentgui._compat import TodoUpdated, todos_from_payload
 from agentgui.attachments import attachment_payloads
-from agentgui.protocol import ApprovalRequest, Frame, frame, tool_kind
+from agentgui.protocol import ApprovalRequest, Frame, frame, plugin_notice, tool_kind
 from agentgui.store import SessionRecord, Store
 from agentgui.usage import model_usage, usage_frame
 
@@ -87,6 +89,8 @@ def event_frame(event: Any) -> Frame:
             return frame("cancelled", reason=reason)
         case TodoUpdated(todos):
             return frame("todos", todos=[item.model_dump() for item in todos])
+        case PluginNotice(plugin, hook, action, message):
+            return plugin_notice(plugin, hook, action, message)
         case SkillActivated(name, active):
             return frame(
                 "notice",
@@ -231,14 +235,22 @@ class LingCoreBackend(BackendBase):
                 patterns.append(pattern)
         return answer != "deny"
 
+    def commands_metadata(self) -> list[dict[str, str]]:
+        return getattr(self.agent, "commands", CommandCatalog()).metadata()
+
     async def run_turn(self, inp: UserTurn) -> AsyncIterator[Frame]:
         assert self.agent
+        catalog = getattr(self.agent, "commands", CommandCatalog())
+        incoming = catalog.resolve(inp.text, reserved=()) or UserInput(text=inp.text)
+        incoming = UserInput(
+            text=incoming.text,
+            display_text=incoming.display_text,
+            attachments=inp.attachments,
+        )
         self.task = asyncio.current_task()
         self.shell_commands.clear()
         try:
-            async with aclosing(
-                self.agent.run(UserInput(text=inp.text, attachments=inp.attachments))
-            ) as stream:
+            async with aclosing(self.agent.run(incoming)) as stream:
                 async for event in stream:
                     if (
                         isinstance(event, ToolCallStarted)
@@ -260,12 +272,17 @@ class LingCoreBackend(BackendBase):
             if not started:
                 task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        notices: list[PluginNotice] = getattr(
+            self.agent, "drain_plugin_notices", lambda: []
+        )()
         result = self.agent.finalize_cancelled_turn() if started else TurnCancelled()
         self.sync_history()
         # Requests that finished before the cancellation landed were billed.
-        return [event_frame(u) for u in self.agent.drain_usage()] + [
-            event_frame(result)
-        ]
+        return (
+            [event_frame(u) for u in self.agent.drain_usage()]
+            + [event_frame(notice) for notice in notices]
+            + [event_frame(result)]
+        )
 
     def reconcile(self, status: list[dict[str, Any]]) -> None:
         # Reconcile after native cancellation finalization, then retain status
@@ -278,7 +295,9 @@ class LingCoreBackend(BackendBase):
             return
         old_status = {
             t["seq"]: [
-                f for f in t["frames"] if f["type"] in {"error", "cancelled", "notice"}
+                f
+                for f in t["frames"]
+                if f["type"] in {"error", "cancelled", "notice", "plugin_notice"}
             ]
             for t in self.store.turns(self.session.id)
         }
@@ -350,7 +369,11 @@ class LingCoreBackend(BackendBase):
         if not self.native or not self.agent or not self.session.native_id:
             raise ValueError("editing requires native session history")
         original = self.native.rewind_to_user_message(self.session.native_id, seq)
-        self.agent = self._build(self.agent.llm)
+        previous = self.agent
+        self.agent = self._build(previous.llm)
+        close = getattr(previous, "aclose", None)
+        if close is not None:
+            await close()
         self.store.truncate(self.session.id, seq)
         yield frame("edit_accepted", seq=seq, text=text)
         async for event in self.run_turn(UserTurn(text, original.attachments)):
@@ -367,3 +390,6 @@ class LingCoreBackend(BackendBase):
     async def close(self) -> None:
         if self.task:
             await self.stop()
+        close = getattr(self.agent, "aclose", None)
+        if close is not None:
+            await close()
