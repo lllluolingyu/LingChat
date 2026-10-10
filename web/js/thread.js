@@ -574,6 +574,52 @@ export function addNote(kind, text) {
   scrollToBottom();
 }
 
+const PLUGIN_ACTIONS = {
+  "before_tool.denied": "denied a tool call",
+  "before_tool.asked": "asked for approval",
+  "after_tool.modified": "adjusted a tool result",
+  "user_message.modified": "added context to the message",
+  "user_message.blocked": "blocked the message",
+};
+
+function pluginActionText(msg) {
+  if (msg.action === "failed") return "hook failed";
+  return PLUGIN_ACTIONS[`${msg.hook}.${msg.action}`] || `${msg.hook} · ${msg.action}`;
+}
+
+// A plugin notice: the plugin's name, LingCore's framing of what it did, and the
+// plugin's own words verbatim. The hook and action stay available as a tooltip.
+// LingCore follows every blocked input with an Error naming the plugin and its
+// reason, so that notice is not drawn twice.
+const PLUGIN_TEXT_FROM_CORE = new Set(["Added user context"]);
+
+export function isRedundantPluginNote(msg) {
+  return msg.hook === "user_message" && msg.action === "blocked";
+}
+
+export function addPluginNote(msg) {
+  if (isRedundantPluginNote(msg)) return;
+  const r = row("event");
+  const note = document.createElement("div");
+  note.className = `note plugin${msg.action === "failed" ? " failed" : ""}`;
+  note.title = `${msg.plugin} · ${msg.hook} · ${msg.action}`;
+  const name = document.createElement("span");
+  name.className = "note-plugin";
+  name.textContent = msg.plugin;
+  const action = document.createElement("span");
+  action.className = "note-plugin-action";
+  action.textContent = pluginActionText(msg);
+  note.append(name, action);
+  if (msg.message && !PLUGIN_TEXT_FROM_CORE.has(msg.message)) {
+    const text = document.createElement("span");
+    text.className = "note-plugin-text";
+    text.textContent = msg.message;
+    note.appendChild(text);
+  }
+  r.appendChild(note);
+  scrollToBottom();
+}
+
 export function showTyping() {
   if (typingEl) return;
   const r = row("agent");

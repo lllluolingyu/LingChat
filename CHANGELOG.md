@@ -5,6 +5,45 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-10
+
+### Added
+
+- Plugin notices from LingCore 0.4 hooks render in both browser UIs as their
+  own note: the plugin's name as a tag, what it did (denied a tool call, asked
+  for approval, adjusted a tool result, added context to the message — in
+  AgentGUI, translated), and the plugin's own reason verbatim. The hook and
+  action stay available as a tooltip, and a failing hook takes the warning
+  colour. A blocked message shows only LingCore's error, which already names
+  the plugin and its reason. AgentGUI stores notices with their turn; the
+  legacy UI re-adds them after its post-turn transcript reload, since LingCore
+  keeps them out of session history.
+- A slash-command menu above the composer. The `hello` frame carries the
+  runtime's command catalog (profile and plugin commands), and typing `/` lists
+  matching commands with their argument hint and description. Matching is
+  case-insensitive; ↑/↓ choose, Tab or Enter insert, Esc closes, and the input
+  keeps focus throughout. Expansion stays server-side, so the transcript and
+  Edit keep the command as typed.
+
+### Changed
+
+- LingChat now requires LingCore 0.4.x (`lingcore>=0.4.0,<0.5.0`).
+- Both servers close the Agent they replace (Edit, session switch) and the one
+  they hold on disconnect through `Agent.aclose()`, so plugin hooks shut down
+  and the bundled browser plugin's Chromium exits with the conversation. Stop
+  delivers pending plugin notices and already-billed usage before the
+  cancellation.
+- Messages are sent as typed rather than trimmed, so a command's arguments
+  reach its template verbatim; a whitespace-only message is still refused.
+
+### Fixed
+
+- AgentGUI stores a plugin notice raised mid-turn once. Reconciling the turn
+  used to keep it in place and append it again to the last turn, so it showed
+  twice after a reload.
+- The composer's text area no longer draws a second focus ring inside the
+  composer's own.
+
 ## [0.3.1] - 2026-10-08
 
 ### Added
@@ -175,7 +214,8 @@ Notable user-facing LingChat changes are documented here. The project follows
 - Initial browser frontend with authenticated WebSocket streaming, tool
   confirmation, multimodal attachments, and profile-scoped session history.
 
-[Unreleased]: https://github.com/lllluolingyu/LingChat/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/lllluolingyu/LingChat/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/lllluolingyu/LingChat/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/lllluolingyu/LingChat/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/lllluolingyu/LingChat/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/lllluolingyu/LingChat/releases/tag/v0.2.0

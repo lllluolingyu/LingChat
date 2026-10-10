@@ -28,6 +28,7 @@ import {
 import {
   abandonStreaming,
   addNote,
+  addPluginNote,
   addToolCard,
   addUserMessage,
   appendAgentText,
@@ -37,6 +38,7 @@ import {
   discardAgentMessage,
   finalizeAgentMessage,
   hideTyping,
+  isRedundantPluginNote,
   isStreaming,
   resolveToolCard,
   setAgentIdentity,
@@ -77,7 +79,9 @@ let connected = false;
 let turnActive = false;
 let transcriptSyncing = false;
 let transcriptSyncGeneration = 0;
-let pendingTurnNote = null;
+// Notes re-added after the post-turn transcript reload: history replays
+// neither stop/error notes nor transient plugin notices.
+let pendingTurnNotes = [];
 let pendingAttachments = [];
 let forkActive = false;
 
@@ -108,14 +112,16 @@ function setTurnActive(active) {
   updateSendState();
 }
 
-function reloadTranscript(note = null) {
+function reloadTranscript(notes = []) {
   const generation = ++transcriptSyncGeneration;
   transcriptSyncing = true;
   setTurnActive(false);
   return loadThread()
     .then(() => {
-      if (generation === transcriptSyncGeneration && note) {
-        addNote(note.kind, note.text);
+      if (generation !== transcriptSyncGeneration) return;
+      for (const note of [notes].flat()) {
+        if (note.plugin) addPluginNote(note.plugin);
+        else addNote(note.kind, note.text);
       }
     })
     .finally(() => {
@@ -127,44 +133,142 @@ function reloadTranscript(note = null) {
 }
 
 
-// Suggestions come from the active server runtime; expansion stays server-side.
+// --- slash-command menu ---------------------------------------------------------
+// A listbox that floats above the composer while the input is a bare "/name"
+// prefix. Suggestions come from the active server runtime and expansion stays
+// server-side: choosing one only inserts its name. The input keeps focus
+// throughout (aria-activedescendant), so typing, ↑/↓, Tab/Enter and Esc all act
+// on the same field.
 let commandMetadata = [];
-const commandSuggestions = document.createElement("div");
-commandSuggestions.setAttribute("role", "listbox");
-commandSuggestions.setAttribute("aria-label", "Commands");
-commandSuggestions.hidden = true;
-commandSuggestions.className = "attachment-tray";
-inputEl.parentElement.before(commandSuggestions);
+let commandMatches = [];
+let commandActive = 0;
+let commandDismissed = false; // Esc closes the menu until the input changes
+const commandMenu = document.createElement("div");
+commandMenu.id = "command-menu";
+commandMenu.className = "command-menu";
+commandMenu.setAttribute("role", "listbox");
+commandMenu.hidden = true;
+formEl.querySelector(".composer-inner").prepend(commandMenu);
+inputEl.setAttribute("aria-controls", commandMenu.id);
+inputEl.setAttribute("aria-autocomplete", "list");
+inputEl.setAttribute("aria-expanded", "false");
+
 function updateCommandSuggestions() {
-  commandSuggestions.replaceChildren();
   const raw = inputEl.value;
-  const matches = raw.startsWith("/") && !/\s/.test(raw)
-    ? commandMetadata.filter(command => command.name.startsWith(raw)).slice(0, 12)
+  const query = raw.toLowerCase();
+  commandMatches = raw.startsWith("/") && !/\s/.test(raw) && !commandDismissed
+    ? commandMetadata
+        .filter(command => command.name.toLowerCase().startsWith(query))
+        .slice(0, 12)
     : [];
-  commandSuggestions.hidden = !matches.length;
-  for (const command of matches) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "attachment-chip";
-    button.setAttribute("role", "option");
-    button.textContent = `${command.name} ${command.argument_hint || ""} — ${command.description || ""}`;
-    button.addEventListener("click", () => {
-      inputEl.value = command.name + " ";
-      updateCommandSuggestions();
-      inputEl.focus();
-      autosize();
-      updateSendState();
-    });
-    commandSuggestions.appendChild(button);
-  }
+  commandActive = 0;
+  renderCommandMenu();
 }
-inputEl.addEventListener("input", updateCommandSuggestions);
-inputEl.addEventListener("keydown", event => {
-  if (event.key === "Tab" && !commandSuggestions.hidden) {
-    event.preventDefault();
-    commandSuggestions.firstElementChild?.click();
+
+function renderCommandMenu() {
+  const open = commandMatches.length > 0;
+  commandMenu.hidden = !open;
+  commandMenu.replaceChildren();
+  commandMenu.setAttribute("aria-label", "Commands");
+  inputEl.setAttribute("aria-expanded", String(open));
+  if (!open) {
+    inputEl.removeAttribute("aria-activedescendant");
+    return;
   }
+  const head = document.createElement("div");
+  head.className = "command-menu-head";
+  head.setAttribute("aria-hidden", "true");
+  const title = document.createElement("span");
+  title.textContent = "Commands";
+  const keys = document.createElement("span");
+  keys.className = "command-menu-keys";
+  keys.textContent = "↑↓ to choose · Tab to insert · Esc to close";
+  head.append(title, keys);
+  commandMenu.appendChild(head);
+  commandMatches.forEach((command, index) => {
+    const option = document.createElement("div");
+    option.id = `command-option-${index}`;
+    option.className = "command-option";
+    option.setAttribute("role", "option");
+    const line = document.createElement("span");
+    line.className = "command-line";
+    const name = document.createElement("span");
+    name.className = "command-name";
+    name.textContent = command.name;
+    line.appendChild(name);
+    if (command.argument_hint) {
+      const hint = document.createElement("span");
+      hint.className = "command-hint";
+      hint.textContent = command.argument_hint;
+      line.appendChild(hint);
+    }
+    option.appendChild(line);
+    if (command.description) {
+      const description = document.createElement("span");
+      description.className = "command-desc";
+      description.textContent = command.description;
+      option.appendChild(description);
+    }
+    // mousedown would move focus off the input and close the keyboard on phones.
+    option.addEventListener("mousedown", event => event.preventDefault());
+    option.addEventListener("mousemove", () => setCommandActive(index));
+    option.addEventListener("click", () => acceptCommand(index));
+    commandMenu.appendChild(option);
+  });
+  setCommandActive(commandActive);
+}
+
+function setCommandActive(index) {
+  commandActive = index;
+  for (const option of commandMenu.querySelectorAll(".command-option")) {
+    const selected = option.id === `command-option-${index}`;
+    option.setAttribute("aria-selected", String(selected));
+    if (selected) option.scrollIntoView({ block: "nearest" });
+  }
+  inputEl.setAttribute("aria-activedescendant", `command-option-${index}`);
+}
+
+function acceptCommand(index = commandActive) {
+  const command = commandMatches[index];
+  if (!command) return;
+  inputEl.value = command.name + " ";
+  inputEl.focus();
+  inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+  updateCommandSuggestions(); // the trailing space closes the menu
+  autosize();
+  updateSendState();
+}
+
+inputEl.addEventListener("input", () => {
+  commandDismissed = false;
+  updateCommandSuggestions();
 });
+inputEl.addEventListener("blur", () => {
+  commandMatches = [];
+  renderCommandMenu();
+});
+inputEl.addEventListener("focus", updateCommandSuggestions);
+// Capture phase, so an open menu takes Enter before the composer's send handler.
+inputEl.addEventListener("keydown", event => {
+  if (commandMenu.hidden || event.isComposing) return;
+  const last = commandMatches.length - 1;
+  switch (event.key) {
+    case "ArrowDown": setCommandActive(commandActive >= last ? 0 : commandActive + 1); break;
+    case "ArrowUp": setCommandActive(commandActive <= 0 ? last : commandActive - 1); break;
+    case "Tab": acceptCommand(); break;
+    case "Enter":
+      if (event.shiftKey) return;
+      acceptCommand();
+      break;
+    case "Escape":
+      commandDismissed = true;
+      updateCommandSuggestions();
+      break;
+    default: return;
+  }
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
 
 function handle(msg) {
   switch (msg.type) {
@@ -181,7 +285,7 @@ function handle(msg) {
       adoptSession(msg.session || null); // server is authoritative
       clearThread();
       setChatTitle(msg.title || "");
-      pendingTurnNote = null;
+      pendingTurnNotes = [];
       reloadTranscript().then(() => {
         const pending = takePendingForkEdit(msg.session);
         if (!pending) return;
@@ -189,7 +293,7 @@ function handle(msg) {
           addNote("error", "The fork was created, but regeneration could not start.");
           return;
         }
-        pendingTurnNote = null;
+        pendingTurnNotes = [];
         setTurnActive(true);
         showTyping();
       });
@@ -218,7 +322,8 @@ function handle(msg) {
       showTyping(); // the model is reading the result
       break;
     case "plugin_notice":
-      addNote("system", `Plugin ${msg.plugin} · ${msg.hook} · ${msg.action}: ${msg.message}`);
+      addPluginNote(msg);
+      if (!isRedundantPluginNote(msg)) pendingTurnNotes.push({ plugin: msg });
       break;
     case "skill":
       addNote("skill", `Skill ${msg.active ? "activated" : "deactivated"}: ${msg.name}`);
@@ -259,8 +364,11 @@ function handle(msg) {
       cancelPendingTools();
       resetConfirms();
       hideTyping();
-      pendingTurnNote = { kind: "system", text: msg.reason || "Stopped by user" };
-      addNote(pendingTurnNote.kind, pendingTurnNote.text);
+      {
+        const note = { kind: "system", text: msg.reason || "Stopped by user" };
+        pendingTurnNotes.push(note);
+        addNote(note.kind, note.text);
+      }
       break;
     case "edit_accepted":
       showTyping();
@@ -289,16 +397,16 @@ function handle(msg) {
       hideTyping();
       setTurnActive(false);
       {
-        const note = pendingTurnNote;
-        pendingTurnNote = null;
-        reloadTranscript(note);
+        const notes = pendingTurnNotes;
+        pendingTurnNotes = [];
+        reloadTranscript(notes);
       }
       break;
     case "error":
       finalizeAgentMessage();
       hideTyping();
       addNote("error", msg.message);
-      pendingTurnNote = { kind: "error", text: msg.message };
+      pendingTurnNotes.push({ kind: "error", text: msg.message });
       break;
   }
 }
@@ -443,7 +551,7 @@ function send() {
   ) return;
   const attachments = pendingAttachments;
   if (!wsSend({ type: "user", text, attachments })) return;
-  pendingTurnNote = null;
+  pendingTurnNotes = [];
   addUserMessage(text, attachments);
   finalizeAgentMessage();
   stickToBottom();
@@ -465,7 +573,7 @@ stopEl.addEventListener("click", () => {
 setEditHandler((seq, text) => {
   if (turnActive || transcriptSyncing || !socketOpen()) return false;
   if (!wsSend({ type: "edit", seq, text })) return false;
-  pendingTurnNote = null;
+  pendingTurnNotes = [];
   setTurnActive(true);
   return true;
 });
@@ -475,7 +583,7 @@ setForkHandler(async (seq, regenerateText = undefined) => {
   forkActive = true;
   try {
     const forked = await forkCurrentSession(seq, regenerateText);
-    if (forked) pendingTurnNote = null;
+    if (forked) pendingTurnNotes = [];
     return forked;
   } finally {
     forkActive = false;

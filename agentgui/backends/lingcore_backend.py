@@ -286,13 +286,23 @@ class LingCoreBackend(BackendBase):
 
     def reconcile(self, status: list[dict[str, Any]]) -> None:
         # Reconcile after native cancellation finalization, then retain status
-        # information that LingCore's canonical messages do not carry.
-        self.sync_history()
-        self.store.append_status(self.session.id, status)
+        # information that LingCore's canonical messages do not carry. Frames
+        # whose turn survived the rebuild already kept their place; only those
+        # whose turn has no native row (blocked input, a rolled-back tail) are
+        # appended to the last turn.
+        kept = self.sync_history()
+        missing = []
+        for wire in status:
+            if wire in kept:
+                kept.remove(wire)
+            else:
+                missing.append(wire)
+        self.store.append_status(self.session.id, missing)
 
-    def sync_history(self) -> None:
+    def sync_history(self) -> list[dict[str, Any]]:
+        """Rebuild GUI turns from native history; return the status frames kept."""
         if not self.native or not self.session.native_id:
-            return
+            return []
         old_status = {
             t["seq"]: [
                 f
@@ -302,6 +312,7 @@ class LingCoreBackend(BackendBase):
             for t in self.store.turns(self.session.id)
         }
         turns = []
+        kept: list[dict[str, Any]] = []
         events = self.native.events(self.session.native_id)
         for record in self.native.message_records(self.session.native_id):
             m = record.message
@@ -361,9 +372,12 @@ class LingCoreBackend(BackendBase):
                         "text": f"{event.kind}: {event.payload}",
                     }
                 )
-            frames.extend(f for f in old_status.get(record.seq, []) if f not in frames)
+            status = [f for f in old_status.get(record.seq, []) if f not in frames]
+            frames.extend(status)
+            kept.extend(status)
             turns.append({"seq": record.seq, "role": m.role, "frames": frames})
         self.store.replace_turns(self.session.id, turns)
+        return kept
 
     async def edit(self, seq: int, text: str) -> AsyncIterator[Frame]:
         if not self.native or not self.agent or not self.session.native_id:

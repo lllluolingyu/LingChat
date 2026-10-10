@@ -10,6 +10,7 @@ import { markFor } from "./marks.js";
 import {
   addAgentMarkdown,
   addNote,
+  addPluginNote,
   addTodoCard,
   addToolCard,
   addUserMessage,
@@ -322,8 +323,7 @@ function renderHistory(turns) {
         }
         case "error": flush(); addNote("error", frame.message); break;
         case "cancelled": flush(); addNote("system", frame.reason || t("note.stopped")); break;
-        case "plugin_notice":
-          flush(); addNote("system", `Plugin ${frame.plugin} · ${frame.hook} · ${frame.action}: ${frame.message}`); break;
+        case "plugin_notice": flush(); addPluginNote(frame); break;
         case "notice":
           if (frame.discarded_chars) text = "";
           flush(); addNote(frame.level === "warning" ? "error" : "system", frame.text); break;

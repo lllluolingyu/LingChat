@@ -278,3 +278,101 @@ def test_agentgui_stop_drains_notices_before_finalize():
         assert [value.type for value in frames] == ["plugin_notice", "cancelled"]
 
     asyncio.run(run())
+
+
+def test_agentgui_keeps_one_copy_of_a_mid_turn_plugin_notice(tmp_path):
+    import asyncio
+
+    import yaml
+    from lingcore.llm import LLMChunk
+    from lingcore.message import ToolCall
+
+    from agentgui.backends.base import UserTurn
+    from agentgui.backends.lingcore_backend import LingCoreBackend, ProfileCache
+    from agentgui.catalog import ModelEntry
+    from agentgui.store import Store
+
+    plugin = tmp_path / "plugins" / "guard"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": "guard",
+                "version": "0.1.0",
+                "api": 1,
+                "module": "plugin.py",
+                "provides": ["guard_echo"],
+                "hooks": "Hooks",
+            }
+        )
+    )
+    (plugin / "plugin.py").write_text(
+        "from pydantic import BaseModel\n"
+        "from lingcore.plugins import PluginHooks, ToolDecision\n"
+        "from lingcore.tools import ToolContext, tool\n\n"
+        "class EchoArgs(BaseModel):\n    text: str\n\n"
+        '@tool(name="guard_echo")\n'
+        "async def echo(args: EchoArgs, ctx: ToolContext) -> str:\n"
+        '    """Echo."""\n    return args.text\n\n'
+        "class Hooks(PluginHooks):\n"
+        "    async def before_tool(self, event):\n"
+        '        return ToolDecision.deny("not that value")\n'
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    profile = tmp_path / "config.yaml"
+    profile.write_text(
+        yaml.safe_dump(
+            {
+                "name": "fake",
+                "workspace": str(workspace),
+                "llm": {"model": "fake"},
+                "plugins": ["guard"],
+                "tools": ["guard_echo"],
+            }
+        )
+    )
+
+    class FakeLLM:
+        async def stream(self, messages, tools=None):
+            if messages[-1].role == "user":
+                call = ToolCall(id="t1", name="guard_echo", arguments={"text": "x"})
+                yield LLMChunk(tool_calls=[call], finish_reason="tool_calls")
+                return
+            yield LLMChunk(text_delta="done")
+            yield LLMChunk(finish_reason="stop")
+
+    async def run():
+        store = Store(tmp_path / "gui.db")
+        cache = ProfileCache()
+        session = store.create(
+            ModelEntry("fake", "Fake", "lingcore", options={"profile": str(profile)}),
+            str(workspace),
+            "edit",  # ask mode narrows the ceiling to run_shell
+        )
+        backend = LingCoreBackend(store, cache, FakeLLM)
+        await backend.start(session, lambda request: asyncio.sleep(0, result="deny"))
+        # Mirror ChatConnection: the turn's seq is taken before the run, every
+        # frame is persisted into it as it streams, then reconcile runs with the
+        # turn's status frames.
+        seq = store.next_seq(session.id)
+        store.put_turn(session.id, seq, "user", [{"type": "user", "text": "go"}])
+        frames = []
+        async for outgoing in backend.run_turn(UserTurn("go")):
+            frames.append(outgoing.to_wire())
+            store.append_frame(session.id, seq, frames[-1])
+        notices = [f for f in frames if f["type"] == "plugin_notice"]
+        assert len(notices) == 1
+        backend.reconcile(notices)
+        stored = [
+            f
+            for turn in store.turns(session.id)
+            for f in turn["frames"]
+            if f["type"] == "plugin_notice"
+        ]
+        assert stored == notices
+        await backend.close()
+        cache.close()
+        store.close()
+
+    asyncio.run(run())

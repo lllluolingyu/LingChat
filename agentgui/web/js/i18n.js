@@ -62,6 +62,11 @@ const STRINGS = {
   "composer.hint_send": { en: "to send", zh: "发送" },
   "composer.hint_newline": { en: "for a new line", zh: "换行" },
   "composer.jump_latest": { en: "Scroll to latest", zh: "回到最新消息" },
+  "composer.commands": { en: "Commands", zh: "命令" },
+  "composer.commands_keys": {
+    en: "↑↓ to choose · Tab to insert · Esc to close",
+    zh: "↑↓ 选择 · Tab 插入 · Esc 关闭",
+  },
   "composer.too_many": {
     en: "You can attach at most {count} files per message.",
     zh: "每条消息最多只能附带 {count} 个文件。",
@@ -214,6 +219,12 @@ const STRINGS = {
     zh: "{reason}；正在重试（{attempt}/{max}）",
   },
   "note.stopped": { en: "Stopped by user", zh: "已被用户停止" },
+  "plugin.before_tool.denied": { en: "denied a tool call", zh: "拒绝了工具调用" },
+  "plugin.before_tool.asked": { en: "asked for approval", zh: "请求确认" },
+  "plugin.after_tool.modified": { en: "adjusted a tool result", zh: "调整了工具结果" },
+  "plugin.user_message.modified": { en: "added context to the message", zh: "为消息补充了上下文" },
+  "plugin.user_message.blocked": { en: "blocked the message", zh: "拦截了消息" },
+  "plugin.failed": { en: "hook failed", zh: "钩子运行出错" },
   "note.edit_failed": {
     en: "The message could not be edited.",
     zh: "这条消息无法编辑。",
