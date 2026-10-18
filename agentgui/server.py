@@ -33,6 +33,8 @@ from lingcore.media_types import (
 )
 from pydantic import BaseModel, Field, StrictInt
 
+from lingchat._web import install_browser_assets
+
 from .attachments import content_disposition, display_turns, validate_attachments
 from .backends.base import AgentBackend, UserTurn
 from .backends.codex_backend import CodexBackend
@@ -396,6 +398,7 @@ def create_app(
             store.close()
 
     app = FastAPI(title="Agent-Chat-GUI", lifespan=lifespan)
+    install_browser_assets(app)
     app.state.auth_token = token
     app.state.catalog = models_catalog
     app.state.store = store

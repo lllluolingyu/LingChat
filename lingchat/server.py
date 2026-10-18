@@ -89,6 +89,7 @@ from lingcore.tools.builtin.shell import allowlist_pattern_for
 from pydantic import BaseModel, Field, StrictInt
 
 from lingchat._compat import TodoUpdated, todos_from_payload
+from lingchat._web import install_browser_assets
 
 
 def _find_web_dir() -> Path:
@@ -822,6 +823,7 @@ def create_app(
                 store.close()
 
     app = FastAPI(title="LingChat", lifespan=lifespan)
+    install_browser_assets(app)
     app.state.auth_token = token
     app.state.profile = profile
 

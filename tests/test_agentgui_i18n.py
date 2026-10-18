@@ -52,14 +52,17 @@ def test_default_language_is_chinese():
     # The pre-paint read decides which CJK face the font stacks fall through to,
     # so the page must set <html lang> before first paint rather than on boot.
     index = (WEB / "index.html").read_text(encoding="utf-8")
-    assert "agentgui-lang" in index and "documentElement.lang" in index
+    bootstrap = (WEB / "js" / "bootstrap.js").read_text(encoding="utf-8")
+    assert "agentgui-lang" in bootstrap and "documentElement.lang" in bootstrap
     assert '<html lang="zh">' in index
 
 
 def test_every_referenced_key_exists():
     declared = set(_declared())
     missing: list[str] = []
-    for source in sorted((WEB / "js").glob("*.js")):
+    from lingchat._web import SHARED_DIR
+
+    for source in sorted((WEB / "js").glob("*.js")) + sorted(SHARED_DIR.glob("*.js")):
         text = source.read_text(encoding="utf-8")
         # `(?<![\w$])` keeps this off the tail of createElement("div").
         for key in re.findall(r'(?<![\w$])t\(\s*"([a-z][\w.]*)"', text):
@@ -70,6 +73,13 @@ def test_every_referenced_key_exists():
         if key not in declared:
             missing.append(f"index.html: {key}")
     assert not missing, f"keys used but never declared: {missing}"
+
+
+def test_ui_errors_use_translation_keys():
+    """Guard literal Error messages; code/DOM strings need no translation."""
+    for source in sorted((WEB / "js").glob("*.js")):
+        text = source.read_text(encoding="utf-8")
+        assert not re.search(r"new Error\(\s*[\"'`]", text), source.name
 
 
 def test_static_markup_carries_a_translation_for_every_data_i18n_node():

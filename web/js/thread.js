@@ -7,6 +7,9 @@
 // to the same tool resolve the right card; name matching is only a fallback
 // for an id-less message.
 
+import { createNotes } from "/shared/notes.js";
+import { createStreamView } from "/shared/stream-view.js";
+import { captureView, restoreView } from "/shared/thread-view.js";
 import { renderMarkdown, attachCopyHandler, COPY_ICON_SVG } from "./markdown.js";
 
 const $ = (id) => document.getElementById(id);
@@ -15,7 +18,7 @@ const messagesEl = $("messages");
 const threadEl = $("thread");
 const jumpBtn = $("jump-bottom");
 
-let streaming = null; // {body, raw, rafId, col} for the assistant reply in flight
+let streaming = null; // {body, raw, rafId, col, view} for the assistant reply in flight
 let pendingTools = []; // [{id, name, status, body}] tool calls awaiting their result
 let typingEl = null;
 let stick = true; // keep the view glued to the newest message
@@ -245,8 +248,8 @@ function startUserEdit(r, bubble, actions, text, attachments, seq) {
 
   const finish = (shouldSave) => {
     if (!r.classList.contains("editing")) return;
-    const edited = input.value.trim();
-    if (shouldSave && !edited && !attachments.length) return;
+    const edited = input.value;
+    if (shouldSave && !edited.trim() && !attachments.length) return;
     if (shouldSave && !editHandler(seq, edited)) return;
     if (shouldSave) {
       // Editing branches the conversation: remove every rendered row after
@@ -263,6 +266,7 @@ function startUserEdit(r, bubble, actions, text, attachments, seq) {
   cancel.addEventListener("click", () => finish(false));
   save.addEventListener("click", () => finish(true));
   input.addEventListener("keydown", (event) => {
+    if (event.isComposing) return;
     if (event.key === "Escape") finish(false);
     else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) finish(true);
   });
@@ -278,6 +282,7 @@ export function addUserMessage(text, attachments = [], synthetic = false, seq = 
   r.appendChild(bubble);
   if (!synthetic && Number.isInteger(seq)) {
     r.dataset.seq = String(seq);
+    r.dataset.viewKey = `user:${seq}`;
     const actions = document.createElement("div");
     actions.className = "user-actions";
     const edit = document.createElement("button");
@@ -316,7 +321,7 @@ function startAgentMessage() {
   const body = document.createElement("div");
   body.className = "agent-body md";
   col.appendChild(body);
-  streaming = { body, raw: "", rafId: 0, col };
+  streaming = { body, raw: "", rafId: 0, col, view: createStreamView(body, renderMarkdown) };
   return streaming;
 }
 
@@ -331,7 +336,7 @@ export function appendAgentText(text) {
     streaming.rafId = requestAnimationFrame(() => {
       if (!streaming) return;
       streaming.rafId = 0;
-      streaming.body.innerHTML = renderMarkdown(streaming.raw);
+      streaming.view.paint(streaming.raw);
       scrollToBottom();
     });
   }
@@ -357,7 +362,7 @@ export function finalizeAgentMessage(finalText) {
   if (!streaming) return;
   if (streaming.rafId) cancelAnimationFrame(streaming.rafId);
   if (finalText) streaming.raw = finalText;
-  streaming.body.innerHTML = renderMarkdown(streaming.raw);
+  streaming.view.finish(streaming.raw);
   appendAgentActions(streaming.col, streaming.raw);
   streaming = null;
   scrollToBottom();
@@ -368,7 +373,7 @@ export function finalizeAgentMessage(finalText) {
 export function discardAgentMessage() {
   if (!streaming) return;
   if (streaming.rafId) cancelAnimationFrame(streaming.rafId);
-  streaming.body.innerHTML = renderMarkdown(streaming.raw);
+  streaming.view.paint(streaming.raw);
   streaming.body.classList.add("discarded");
   streaming = null;
 }
@@ -442,6 +447,7 @@ export function addToolCard(id, name, args) {
   const r = row("event");
   const card = document.createElement("details");
   card.className = "tool-card";
+  if (id) card.dataset.viewKey = r.dataset.viewKey = `tool:${id}`;
 
   const summary = document.createElement("summary");
   const status = document.createElement("span");
@@ -503,122 +509,10 @@ export function cancelPendingTools() {
 
 // --- notes and typing indicator ---------------------------------------------------
 
-const NOTE_ICONS = { skill: "⚙", retry: "⟲", compact: "⊞", error: "⚠", system: "" };
-
-function tokenEstimate(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? `~${Math.max(0, Math.round(n)).toLocaleString()}` : "~?";
-}
-
-export function compactNote(msg) {
-  const count = Number(msg.summarized_messages);
-  const rounded = Number.isFinite(count) ? Math.max(0, Math.round(count)) : null;
-  const label =
-    rounded === 1
-      ? "1 earlier message"
-      : `${rounded === null ? "some" : rounded.toLocaleString()} earlier messages`;
-  const before = tokenEstimate(msg.before_tokens);
-  const after = tokenEstimate(msg.after_tokens);
-  return `Context compacted: summarized ${label} (${before} → ${after} tokens).`;
-}
-
-// A todo_write checklist. Content is model text: rendered via textContent only.
-const TODO_MARKS = { completed: "✓", in_progress: "▸", pending: "○" };
-
-export function addTodoCard(todos, title) {
-  const r = row("event");
-  const card = document.createElement("div");
-  card.className = "note todos";
-  const head = document.createElement("div");
-  head.className = "todos-head";
-  head.textContent = title;
-  card.appendChild(head);
-  const list = document.createElement("ul");
-  list.className = "todos-list";
-  for (const item of Array.isArray(todos) ? todos : []) {
-    const status = TODO_MARKS[item?.status] ? item.status : "pending";
-    const li = document.createElement("li");
-    li.className = `todo ${status}`;
-    const mark = document.createElement("span");
-    mark.className = "todo-mark";
-    mark.setAttribute("aria-hidden", "true");
-    mark.textContent = TODO_MARKS[status];
-    const text = document.createElement("span");
-    text.textContent = String(item?.content ?? "");
-    li.append(mark, text);
-    list.appendChild(li);
-  }
-  card.appendChild(list);
-  r.appendChild(card);
-  scrollToBottom();
-}
-
-export function todoCounts(todos) {
-  const items = Array.isArray(todos) ? todos : [];
-  return { done: items.filter((i) => i?.status === "completed").length, total: items.length };
-}
-
-export function addNote(kind, text) {
-  const r = row("event");
-  const note = document.createElement("div");
-  note.className = `note ${kind}`;
-  const icon = NOTE_ICONS[kind];
-  if (icon) {
-    const ic = document.createElement("span");
-    ic.className = "note-icon";
-    ic.textContent = icon;
-    note.appendChild(ic);
-  }
-  note.appendChild(document.createTextNode(text));
-  r.appendChild(note);
-  scrollToBottom();
-}
-
-const PLUGIN_ACTIONS = {
-  "before_tool.denied": "denied a tool call",
-  "before_tool.asked": "asked for approval",
-  "after_tool.modified": "adjusted a tool result",
-  "user_message.modified": "added context to the message",
-  "user_message.blocked": "blocked the message",
-};
-
-function pluginActionText(msg) {
-  if (msg.action === "failed") return "hook failed";
-  return PLUGIN_ACTIONS[`${msg.hook}.${msg.action}`] || `${msg.hook} · ${msg.action}`;
-}
-
-// A plugin notice: the plugin's name, LingCore's framing of what it did, and the
-// plugin's own words verbatim. The hook and action stay available as a tooltip.
-// LingCore follows every blocked input with an Error naming the plugin and its
-// reason, so that notice is not drawn twice.
-const PLUGIN_TEXT_FROM_CORE = new Set(["Added user context"]);
-
-export function isRedundantPluginNote(msg) {
-  return msg.hook === "user_message" && msg.action === "blocked";
-}
-
-export function addPluginNote(msg) {
-  if (isRedundantPluginNote(msg)) return;
-  const r = row("event");
-  const note = document.createElement("div");
-  note.className = `note plugin${msg.action === "failed" ? " failed" : ""}`;
-  note.title = `${msg.plugin} · ${msg.hook} · ${msg.action}`;
-  const name = document.createElement("span");
-  name.className = "note-plugin";
-  name.textContent = msg.plugin;
-  const action = document.createElement("span");
-  action.className = "note-plugin-action";
-  action.textContent = pluginActionText(msg);
-  note.append(name, action);
-  if (msg.message && !PLUGIN_TEXT_FROM_CORE.has(msg.message)) {
-    const text = document.createElement("span");
-    text.className = "note-plugin-text";
-    text.textContent = msg.message;
-    note.appendChild(text);
-  }
-  r.appendChild(note);
-  scrollToBottom();
-}
+export const { compactNote, todoCounts, addNote, addTodoCard, addPluginNote, isRedundantPluginNote } = createNotes({
+  row,
+  scrollToBottom,
+});
 
 export function showTyping() {
   if (typingEl) return;
@@ -641,13 +535,23 @@ export function hideTyping() {
   }
 }
 
-export function clearThread() {
+export function captureThreadView() {
+  return captureView(threadEl, messagesEl, stick);
+}
+
+export function restoreThreadView(view) {
+  restoreView(threadEl, messagesEl, view);
+  stick = view.stick;
+  jumpBtn.hidden = stick;
+}
+
+export function clearThread(preserveView = false) {
   abandonStreaming();
   threadEl.textContent = "";
   pendingTools = [];
   typingEl = null;
-  stick = true;
-  jumpBtn.hidden = true;
+  stick = !preserveView;
+  jumpBtn.hidden = stick;
 }
 
 attachCopyHandler(threadEl);

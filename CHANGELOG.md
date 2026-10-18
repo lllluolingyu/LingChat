@@ -5,6 +5,41 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- JavaScript behavior tests for shared browser modules, run in CI without npm
+  dependencies, and optional Chromium checks for both frontends.
+
+### Changed
+
+- Both frontends share packaged modules for Markdown, slash commands,
+  attachments, notes, and transcript view preservation, with no build step.
+- Streaming replies render settled Markdown blocks once, preserving selections
+  and copy controls in earlier blocks as the reply grows.
+- Approval prompts use native modal dialogs with focus containment and a safe
+  default. Escape denies the current queued request. Session selection, rename,
+  and delete controls support keyboard navigation and accessible labels.
+- Both servers set a strict content security policy, prevent MIME sniffing and
+  referrer disclosure, and disable response caching. Theme and language setup
+  runs from external scripts before first paint.
+
+### Fixed
+
+- Transcript reloads preserve scroll position and expanded tool and thinking
+  blocks. Session switches invalidate pending history requests.
+- Overlapping attachment reads enforce file count and total size limits, block
+  sending until reads finish, and discard stale reads after session changes.
+  Extension-based MIME detection also drives backend capability checks, and
+  AgentGUI attachment errors and removal hints are translated.
+- Markdown links retain URLs containing emphasis or code punctuation.
+- Editing preserves message whitespace and ignores keyboard shortcuts during
+  IME composition. Enter sends a fully typed slash command while partial
+  commands still insert the selected suggestion.
+- AgentGUI's model picker shows only available backend groups and handles
+  backend names without a translation.
+- FastAPI's generated Swagger, ReDoc, and OAuth redirect pages are exempt from
+  the browser UI's content security policy so their scripts can run.
+
 ## [0.4.0] - 2026-10-10
 
 ### Added

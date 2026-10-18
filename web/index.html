@@ -6,17 +6,7 @@
   <title>LingChat</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Cdefs%3E%3ClinearGradient%20id='g'%20x1='0'%20y1='0'%20x2='1'%20y2='1'%3E%3Cstop%20offset='0'%20stop-color='%23e0845f'/%3E%3Cstop%20offset='1'%20stop-color='%23c4633f'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20width='32'%20height='32'%20rx='9'%20fill='url(%23g)'/%3E%3Cpath%20d='M16%2013.8V6.4M17.6%2014.4l3.9-3.9M18.2%2016h7.4M17.6%2017.6l3.9%203.9M16%2018.2v7.4M14.4%2017.6l-3.9%203.9M13.8%2016H6.4M14.4%2014.4l-3.9-3.9'%20fill='none'%20stroke='%23fff'%20stroke-width='2.9'%20stroke-linecap='round'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="/style.css" />
-  <script>
-    // Apply the stored theme before first paint to avoid a flash.
-    (() => {
-      try {
-        const t = localStorage.getItem("lingchat-theme");
-        if (t === "light" || (t === null && matchMedia("(prefers-color-scheme: light)").matches)) {
-          document.documentElement.dataset.theme = "light";
-        }
-      } catch { /* storage may be unavailable; default theme is fine */ }
-    })();
-  </script>
+  <script src="/js/bootstrap.js"></script>
 </head>
 <body>
   <div id="backdrop" hidden></div>
@@ -109,7 +99,7 @@
   </div>
 
   <!-- Inline confirmation prompt (shell command or other action), shown only when the agent asks. -->
-  <div id="confirm" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+  <dialog id="confirm" class="modal" aria-labelledby="confirm-title">
     <div class="modal-card">
       <div class="modal-head">
         <span class="modal-icon" aria-hidden="true">
@@ -123,12 +113,12 @@
       </div>
       <code id="confirm-cmd"></code>
       <div class="modal-actions">
-        <button id="confirm-deny" class="btn">Deny <span class="key-hint">Esc</span></button>
-        <button id="confirm-allow-session" class="btn btn-session" hidden>Allow always this session</button>
-        <button id="confirm-allow" class="btn btn-primary">Allow once</button>
+        <button type="button" id="confirm-deny" autofocus class="btn">Deny <span class="key-hint">Esc</span></button>
+        <button type="button" id="confirm-allow-session" class="btn btn-session" hidden>Allow always this session</button>
+        <button type="button" id="confirm-allow" class="btn btn-primary">Allow once</button>
       </div>
     </div>
-  </div>
+  </dialog>
 
   <script type="module" src="/js/main.js"></script>
 </body>

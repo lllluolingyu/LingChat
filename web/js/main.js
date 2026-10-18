@@ -5,6 +5,8 @@
 // view), the composer with its attachment tray, the theme toggle, and boot.
 // Plain ES modules, no build step: the browser loads this file directly.
 
+import { createAttachmentQueue } from "/shared/attachments.js";
+import { createCommandMenu } from "/shared/command-menu.js";
 import {
   api,
   connect,
@@ -82,7 +84,6 @@ let transcriptSyncGeneration = 0;
 // Notes re-added after the post-turn transcript reload: history replays
 // neither stop/error notes nor transient plugin notices.
 let pendingTurnNotes = [];
-let pendingAttachments = [];
 let forkActive = false;
 
 let limits = {
@@ -132,150 +133,21 @@ function reloadTranscript(notes = []) {
     });
 }
 
-
-// --- slash-command menu ---------------------------------------------------------
-// A listbox that floats above the composer while the input is a bare "/name"
-// prefix. Suggestions come from the active server runtime and expansion stays
-// server-side: choosing one only inserts its name. The input keeps focus
-// throughout (aria-activedescendant), so typing, ↑/↓, Tab/Enter and Esc all act
-// on the same field.
-let commandMetadata = [];
-let commandMatches = [];
-let commandActive = 0;
-let commandDismissed = false; // Esc closes the menu until the input changes
-const commandMenu = document.createElement("div");
-commandMenu.id = "command-menu";
-commandMenu.className = "command-menu";
-commandMenu.setAttribute("role", "listbox");
-commandMenu.hidden = true;
-formEl.querySelector(".composer-inner").prepend(commandMenu);
-inputEl.setAttribute("aria-controls", commandMenu.id);
-inputEl.setAttribute("aria-autocomplete", "list");
-inputEl.setAttribute("aria-expanded", "false");
-
-function updateCommandSuggestions() {
-  const raw = inputEl.value;
-  const query = raw.toLowerCase();
-  commandMatches = raw.startsWith("/") && !/\s/.test(raw) && !commandDismissed
-    ? commandMetadata
-        .filter(command => command.name.toLowerCase().startsWith(query))
-        .slice(0, 12)
-    : [];
-  commandActive = 0;
-  renderCommandMenu();
-}
-
-function renderCommandMenu() {
-  const open = commandMatches.length > 0;
-  commandMenu.hidden = !open;
-  commandMenu.replaceChildren();
-  commandMenu.setAttribute("aria-label", "Commands");
-  inputEl.setAttribute("aria-expanded", String(open));
-  if (!open) {
-    inputEl.removeAttribute("aria-activedescendant");
-    return;
-  }
-  const head = document.createElement("div");
-  head.className = "command-menu-head";
-  head.setAttribute("aria-hidden", "true");
-  const title = document.createElement("span");
-  title.textContent = "Commands";
-  const keys = document.createElement("span");
-  keys.className = "command-menu-keys";
-  keys.textContent = "↑↓ to choose · Tab to insert · Esc to close";
-  head.append(title, keys);
-  commandMenu.appendChild(head);
-  commandMatches.forEach((command, index) => {
-    const option = document.createElement("div");
-    option.id = `command-option-${index}`;
-    option.className = "command-option";
-    option.setAttribute("role", "option");
-    const line = document.createElement("span");
-    line.className = "command-line";
-    const name = document.createElement("span");
-    name.className = "command-name";
-    name.textContent = command.name;
-    line.appendChild(name);
-    if (command.argument_hint) {
-      const hint = document.createElement("span");
-      hint.className = "command-hint";
-      hint.textContent = command.argument_hint;
-      line.appendChild(hint);
-    }
-    option.appendChild(line);
-    if (command.description) {
-      const description = document.createElement("span");
-      description.className = "command-desc";
-      description.textContent = command.description;
-      option.appendChild(description);
-    }
-    // mousedown would move focus off the input and close the keyboard on phones.
-    option.addEventListener("mousedown", event => event.preventDefault());
-    option.addEventListener("mousemove", () => setCommandActive(index));
-    option.addEventListener("click", () => acceptCommand(index));
-    commandMenu.appendChild(option);
-  });
-  setCommandActive(commandActive);
-}
-
-function setCommandActive(index) {
-  commandActive = index;
-  for (const option of commandMenu.querySelectorAll(".command-option")) {
-    const selected = option.id === `command-option-${index}`;
-    option.setAttribute("aria-selected", String(selected));
-    if (selected) option.scrollIntoView({ block: "nearest" });
-  }
-  inputEl.setAttribute("aria-activedescendant", `command-option-${index}`);
-}
-
-function acceptCommand(index = commandActive) {
-  const command = commandMatches[index];
-  if (!command) return;
-  inputEl.value = command.name + " ";
-  inputEl.focus();
-  inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
-  updateCommandSuggestions(); // the trailing space closes the menu
-  autosize();
-  updateSendState();
-}
-
-inputEl.addEventListener("input", () => {
-  commandDismissed = false;
-  updateCommandSuggestions();
+// --- slash-command menu -----------------------------------------------------
+const commands = createCommandMenu({
+  inputEl,
+  formEl,
+  onChange() {
+    autosize();
+    updateSendState();
+  },
 });
-inputEl.addEventListener("blur", () => {
-  commandMatches = [];
-  renderCommandMenu();
-});
-inputEl.addEventListener("focus", updateCommandSuggestions);
-// Capture phase, so an open menu takes Enter before the composer's send handler.
-inputEl.addEventListener("keydown", event => {
-  if (commandMenu.hidden || event.isComposing) return;
-  const last = commandMatches.length - 1;
-  switch (event.key) {
-    case "ArrowDown": setCommandActive(commandActive >= last ? 0 : commandActive + 1); break;
-    case "ArrowUp": setCommandActive(commandActive <= 0 ? last : commandActive - 1); break;
-    case "Tab": acceptCommand(); break;
-    case "Enter":
-      if (event.shiftKey) return;
-      acceptCommand();
-      break;
-    case "Escape":
-      commandDismissed = true;
-      updateCommandSuggestions();
-      break;
-    default: return;
-  }
-  event.preventDefault();
-  event.stopImmediatePropagation();
-}, true);
 
 function handle(msg) {
   switch (msg.type) {
     case "hello": {
       updateLimits(msg.limits);
-      commandMetadata = Array.isArray(msg.commands) ? msg.commands : [];
-      updateCommandSuggestions();
+      commands.setCommands(msg.commands);
       const agentName = msg.agent || "the agent";
       setAgentIdentity(agentName, msg.model || "");
       agentChip.textContent = `${msg.agent} · ${msg.model}`;
@@ -283,6 +155,7 @@ function handle(msg) {
       agentChip.hidden = false;
       inputEl.placeholder = `Message ${agentName}…`;
       adoptSession(msg.session || null); // server is authoritative
+      attachments.reset();
       clearThread();
       setChatTitle(msg.title || "");
       pendingTurnNotes = [];
@@ -417,115 +290,30 @@ function updateSendState() {
   sendEl.disabled =
     turnActive ||
     transcriptSyncing ||
+    attachments.busy ||
     !connected ||
-    (!inputEl.value.trim() && !pendingAttachments.length);
+    (!inputEl.value.trim() && !attachments.items.length);
   stopEl.disabled = !turnActive || !connected;
 }
 
-function mediaTypeForFile(file) {
-  if (file.type) return file.type;
-  const name = file.name.toLowerCase();
-  const extensionTypes = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".pdf": "application/pdf",
-    ".txt": "text/plain",
-    ".md": "text/markdown",
-    ".csv": "text/csv",
-    ".html": "text/html",
-    ".css": "text/css",
-    ".json": "application/json",
-    ".xml": "application/xml",
-    ".js": "application/javascript",
-    ".yaml": "application/yaml",
-    ".yml": "application/yaml",
-    ".toml": "application/toml",
-    ".sh": "application/x-sh",
-  };
-  for (const [extension, mediaType] of Object.entries(extensionTypes)) {
-    if (name.endsWith(extension)) return mediaType;
-  }
-  return "";
-}
+const attachments = createAttachmentQueue({
+  getLimits: () => limits,
+  onChange() {
+    renderAttachmentTray();
+    updateSendState();
+  },
+  onError: (message) => addNote("error", message),
+});
 
-const TEXTUAL_APPLICATION_TYPES = new Set([
-  "application/json",
-  "application/xml",
-  "application/javascript",
-  "application/ecmascript",
-  "application/yaml",
-  "application/x-yaml",
-  "application/toml",
-  "application/x-sh",
-  "application/x-shellscript",
-]);
-
-// Cosmetic only: LingCore inspects the decoded bytes and may reclassify this.
-function displayKind(mediaType) {
-  if (mediaType.startsWith("image/")) return "image";
-  if (mediaType === "application/pdf") return "file";
-  if (mediaType.startsWith("text/") || TEXTUAL_APPLICATION_TYPES.has(mediaType)) {
-    return "text";
-  }
-  return "binary";
-}
-
-async function fileToAttachment(file) {
-  const mediaType = mediaTypeForFile(file);
-  const limit = mediaType.startsWith("image/")
-    ? limits.image_max_bytes
-    : limits.file_max_bytes;
-  if (file.size > limit) throw new Error(`${file.name} is too large (${file.size} bytes)`);
-  const dataUrl = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error || new Error("failed to read file"));
-    reader.readAsDataURL(file);
-  });
-  const data = dataUrl.split(",", 2)[1] || "";
-  return {
-    kind: displayKind(mediaType),
-    media_type: mediaType,
-    data,
-    name: file.name || "attachment",
-  };
-}
-
-function pendingTotalBytes() {
-  return pendingAttachments.reduce((total, attachment) => {
-    const data = attachment.data || "";
-    const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
-    return total + Math.floor((data.length * 3) / 4) - padding;
-  }, 0);
-}
-
-async function addFiles(files) {
-  for (const file of files) {
-    if (pendingAttachments.length >= limits.max_attachments) {
-      addNote("error", `You can attach at most ${limits.max_attachments} files per message.`);
-      break;
-    }
-    if (pendingTotalBytes() + file.size > limits.total_max_bytes) {
-      addNote("error", `Attachments exceed the ${Math.floor(limits.total_max_bytes / (1024 * 1024))}MB total limit per message.`);
-      break;
-    }
-    try {
-      pendingAttachments.push(await fileToAttachment(file));
-    } catch (e) {
-      addNote("error", e.message || String(e));
-    }
-  }
-  renderAttachmentTray();
-  updateSendState();
+function addFiles(files) {
+  if (turnActive || transcriptSyncing || !connected) return;
+  return attachments.add(files);
 }
 
 function renderAttachmentTray() {
   attachmentTrayEl.textContent = "";
-  attachmentTrayEl.hidden = !pendingAttachments.length;
-  pendingAttachments.forEach((attachment, index) => {
+  attachmentTrayEl.hidden = !attachments.items.length;
+  attachments.items.forEach((attachment, index) => {
     const chip = document.createElement("button");
     chip.type = "button";
     chip.className = "attachment-chip";
@@ -533,9 +321,7 @@ function renderAttachmentTray() {
     const icons = { image: "🖼", file: "📄", text: "📝", binary: "📦" };
     chip.textContent = `${icons[attachment.kind] || "📦"} ${attachmentLabel(attachment)} ×`;
     chip.addEventListener("click", () => {
-      pendingAttachments.splice(index, 1);
-      renderAttachmentTray();
-      updateSendState();
+      attachments.remove(index);
     });
     attachmentTrayEl.appendChild(chip);
   });
@@ -546,19 +332,19 @@ function send() {
   if (
     turnActive ||
     transcriptSyncing ||
-    (!text.trim() && !pendingAttachments.length) ||
+    attachments.busy ||
+    (!text.trim() && !attachments.items.length) ||
     !socketOpen()
   ) return;
-  const attachments = pendingAttachments;
-  if (!wsSend({ type: "user", text, attachments })) return;
+  const batch = attachments.items;
+  if (!wsSend({ type: "user", text, attachments: batch })) return;
   pendingTurnNotes = [];
-  addUserMessage(text, attachments);
+  addUserMessage(text, batch);
   finalizeAgentMessage();
   stickToBottom();
   inputEl.value = "";
-  updateCommandSuggestions();
-  pendingAttachments = [];
-  renderAttachmentTray();
+  commands.update();
+  attachments.reset();
   autosize();
   updateSendState();
   setTurnActive(true);
@@ -571,7 +357,7 @@ stopEl.addEventListener("click", () => {
 });
 
 setEditHandler((seq, text) => {
-  if (turnActive || transcriptSyncing || !socketOpen()) return false;
+  if (turnActive || transcriptSyncing || attachments.busy || !socketOpen()) return false;
   if (!wsSend({ type: "edit", seq, text })) return false;
   pendingTurnNotes = [];
   setTurnActive(true);
@@ -614,6 +400,7 @@ formEl.addEventListener("submit", (e) => {
 });
 
 inputEl.addEventListener("keydown", (e) => {
+  if (commands.handleKeydown(e)) return;
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
     send();
@@ -668,6 +455,7 @@ initConnection({
   onMessage: handle,
   onConnectedChange: (c) => {
     connected = c;
+    if (!c) attachments.reset();
     stopEl.disabled = !c || !turnActive;
     attachEl.disabled = !c || turnActive || transcriptSyncing;
     updateSendState();

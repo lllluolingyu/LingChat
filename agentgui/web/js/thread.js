@@ -8,6 +8,9 @@
 // to the same tool resolve the right card; name matching is only a fallback
 // for an id-less message.
 
+import { createNotes } from "/shared/notes.js";
+import { createStreamView } from "/shared/stream-view.js";
+import { captureView, restoreView } from "/shared/thread-view.js";
 import { renderMarkdown, attachCopyHandler, COPY_ICON_SVG } from "./markdown.js";
 import { t } from "./i18n.js";
 import { markFor } from "./marks.js";
@@ -18,7 +21,7 @@ const messagesEl = $("messages");
 const threadEl = $("thread");
 const jumpBtn = $("jump-bottom");
 
-let streaming = null; // {body, raw, rafId, col} for the assistant reply in flight
+let streaming = null; // {body, raw, rafId, col, view} for the assistant reply in flight
 let pendingTools = []; // [{id, name, status, body}] tool calls awaiting their result
 let typingEl = null;
 let stick = true; // keep the view glued to the newest message
@@ -30,6 +33,7 @@ let forkHandler = null; // async (seq, regenerateText?) => boolean, injected by 
 let attachmentDownloadHandler = null; // async (seq, index, name), injected by main.js
 let capabilities = {};
 let thinking = null;
+let thinkingCount = 0;
 
 // `backend` comes from the server's "hello"; it decides which mark the avatar,
 // the empty state and the typing row draw.
@@ -255,8 +259,8 @@ function startUserEdit(r, bubble, actions, text, attachments, seq) {
 
   const finish = (shouldSave) => {
     if (!r.classList.contains("editing")) return;
-    const edited = input.value.trim();
-    if (shouldSave && !edited && !attachments.length) return;
+    const edited = input.value;
+    if (shouldSave && !edited.trim() && !attachments.length) return;
     if (shouldSave && !editHandler(seq, edited)) return;
     if (shouldSave) {
       // Editing branches the conversation: remove every rendered row after
@@ -273,6 +277,7 @@ function startUserEdit(r, bubble, actions, text, attachments, seq) {
   cancel.addEventListener("click", () => finish(false));
   save.addEventListener("click", () => finish(true));
   input.addEventListener("keydown", (event) => {
+    if (event.isComposing) return;
     if (event.key === "Escape") finish(false);
     else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) finish(true);
   });
@@ -281,6 +286,7 @@ function startUserEdit(r, bubble, actions, text, attachments, seq) {
 }
 
 export function addUserMessage(text, attachments = [], synthetic = false, seq = null) {
+  thinking = null;
   const r = row(synthetic ? "event" : "user");
   const bubble = document.createElement("div");
   bubble.className = synthetic ? "note system media-note" : "bubble-user";
@@ -288,6 +294,7 @@ export function addUserMessage(text, attachments = [], synthetic = false, seq = 
   r.appendChild(bubble);
   if (!synthetic && Number.isInteger(seq)) {
     r.dataset.seq = String(seq);
+    r.dataset.viewKey = `user:${seq}`;
     const actions = document.createElement("div");
     actions.className = "user-actions";
     const edit = document.createElement("button");
@@ -327,7 +334,7 @@ function startAgentMessage() {
   const body = document.createElement("div");
   body.className = "agent-body md";
   col.appendChild(body);
-  streaming = { body, raw: "", rafId: 0, col };
+  streaming = { body, raw: "", rafId: 0, col, view: createStreamView(body, renderMarkdown) };
   return streaming;
 }
 
@@ -343,7 +350,7 @@ export function appendAgentText(text) {
     streaming.rafId = requestAnimationFrame(() => {
       if (!streaming) return;
       streaming.rafId = 0;
-      streaming.body.innerHTML = renderMarkdown(streaming.raw);
+      streaming.view.paint(streaming.raw);
       scrollToBottom();
     });
   }
@@ -369,7 +376,7 @@ export function finalizeAgentMessage(finalText) {
   if (!streaming) return;
   if (streaming.rafId) cancelAnimationFrame(streaming.rafId);
   if (finalText) streaming.raw = finalText;
-  streaming.body.innerHTML = renderMarkdown(streaming.raw);
+  streaming.view.finish(streaming.raw);
   appendAgentActions(streaming.col, streaming.raw);
   streaming = null;
   scrollToBottom();
@@ -380,7 +387,7 @@ export function finalizeAgentMessage(finalText) {
 export function discardAgentMessage() {
   if (!streaming) return;
   if (streaming.rafId) cancelAnimationFrame(streaming.rafId);
-  streaming.body.innerHTML = renderMarkdown(streaming.raw);
+  streaming.view.paint(streaming.raw);
   streaming.body.classList.add("discarded");
   streaming = null;
 }
@@ -401,6 +408,7 @@ export function removeStreamingMessage() {
 }
 
 export function addAgentMarkdown(text, seq = null) {
+  thinking = null;
   hideTyping();
   const col = agentRow();
   const body = document.createElement("div");
@@ -455,6 +463,7 @@ export function addToolCard(id, name, args) {
   const r = row("event");
   const card = document.createElement("details");
   card.className = "tool-card";
+  if (id) card.dataset.viewKey = r.dataset.viewKey = `tool:${id}`;
 
   const summary = document.createElement("summary");
   const status = document.createElement("span");
@@ -521,120 +530,11 @@ export function cancelPendingTools() {
 
 // --- notes and typing indicator ---------------------------------------------------
 
-const NOTE_ICONS = { skill: "⚙", retry: "⟲", compact: "⊞", error: "⚠", system: "" };
-
-function tokenEstimate(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? `~${Math.max(0, Math.round(n)).toLocaleString()}` : "~?";
-}
-
-export function compactNote(msg) {
-  const count = Number(msg.summarized_messages);
-  const rounded = Number.isFinite(count) ? Math.max(0, Math.round(count)) : null;
-  const label =
-    rounded === 1
-      ? t("note.compact_one")
-      : rounded === null
-        ? t("note.compact_some")
-        : t("note.compact_many", { count: rounded.toLocaleString() });
-  return t("note.compacted", {
-    label,
-    before: tokenEstimate(msg.before_tokens),
-    after: tokenEstimate(msg.after_tokens),
-  });
-}
-
-// A todo_write checklist. Content is model text: rendered via textContent only.
-const TODO_MARKS = { completed: "✓", in_progress: "▸", pending: "○" };
-
-export function addTodoCard(todos, title) {
-  const r = row("event");
-  const card = document.createElement("div");
-  card.className = "note todos";
-  const head = document.createElement("div");
-  head.className = "todos-head";
-  head.textContent = title;
-  card.appendChild(head);
-  const list = document.createElement("ul");
-  list.className = "todos-list";
-  for (const item of Array.isArray(todos) ? todos : []) {
-    const status = TODO_MARKS[item?.status] ? item.status : "pending";
-    const li = document.createElement("li");
-    li.className = `todo ${status}`;
-    const mark = document.createElement("span");
-    mark.className = "todo-mark";
-    mark.setAttribute("aria-hidden", "true");
-    mark.textContent = TODO_MARKS[status];
-    const text = document.createElement("span");
-    text.textContent = String(item?.content ?? "");
-    li.append(mark, text);
-    list.appendChild(li);
-  }
-  card.appendChild(list);
-  r.appendChild(card);
-  scrollToBottom();
-}
-
-export function todoCounts(todos) {
-  const items = Array.isArray(todos) ? todos : [];
-  return { done: items.filter((i) => i?.status === "completed").length, total: items.length };
-}
-
-export function addNote(kind, text) {
-  const r = row("event");
-  const note = document.createElement("div");
-  note.className = `note ${kind}`;
-  const icon = NOTE_ICONS[kind];
-  if (icon) {
-    const ic = document.createElement("span");
-    ic.className = "note-icon";
-    ic.textContent = icon;
-    note.appendChild(ic);
-  }
-  note.appendChild(document.createTextNode(text));
-  r.appendChild(note);
-  scrollToBottom();
-}
-
-function pluginActionText(msg) {
-  if (msg.action === "failed") return t("plugin.failed");
-  const key = `plugin.${msg.hook}.${msg.action}`;
-  const text = t(key);
-  return text === key ? `${msg.hook} · ${msg.action}` : text;
-}
-
-// A plugin notice: the plugin's name, LingCore's framing of what it did, and the
-// plugin's own words verbatim. The hook and action stay available as a tooltip.
-// LingCore follows every blocked input with an Error naming the plugin and its
-// reason, so that notice is not drawn twice.
-const PLUGIN_TEXT_FROM_CORE = new Set(["Added user context"]);
-
-export function isRedundantPluginNote(msg) {
-  return msg.hook === "user_message" && msg.action === "blocked";
-}
-
-export function addPluginNote(msg) {
-  if (isRedundantPluginNote(msg)) return;
-  const r = row("event");
-  const note = document.createElement("div");
-  note.className = `note plugin${msg.action === "failed" ? " failed" : ""}`;
-  note.title = `${msg.plugin} · ${msg.hook} · ${msg.action}`;
-  const name = document.createElement("span");
-  name.className = "note-plugin";
-  name.textContent = msg.plugin;
-  const action = document.createElement("span");
-  action.className = "note-plugin-action";
-  action.textContent = pluginActionText(msg);
-  note.append(name, action);
-  if (msg.message && !PLUGIN_TEXT_FROM_CORE.has(msg.message)) {
-    const text = document.createElement("span");
-    text.className = "note-plugin-text";
-    text.textContent = msg.message;
-    note.appendChild(text);
-  }
-  r.appendChild(note);
-  scrollToBottom();
-}
+export const { compactNote, todoCounts, addNote, addTodoCard, addPluginNote, isRedundantPluginNote } = createNotes({
+  row,
+  scrollToBottom,
+  t,
+});
 
 export function showTyping() {
   if (typingEl) return;
@@ -657,14 +557,25 @@ export function hideTyping() {
   }
 }
 
-export function clearThread() {
+export function captureThreadView() {
+  return captureView(threadEl, messagesEl, stick);
+}
+
+export function restoreThreadView(view) {
+  restoreView(threadEl, messagesEl, view);
+  stick = view.stick;
+  jumpBtn.hidden = stick;
+}
+
+export function clearThread(preserveView = false) {
   thinking = null;
+  thinkingCount = 0;
   abandonStreaming();
   threadEl.textContent = "";
   pendingTools = [];
   typingEl = null;
-  stick = true;
-  jumpBtn.hidden = true;
+  stick = !preserveView;
+  jumpBtn.hidden = stick;
 }
 
 attachCopyHandler(threadEl);
@@ -674,9 +585,14 @@ export function appendThinking(delta) {
   if (!thinking) {
     const details = document.createElement("details");
     details.className = "thinking-block";
-    const summary = document.createElement("summary"); summary.textContent = t("thread.thinking");
-    thinking = document.createElement("pre"); details.append(summary, thinking);
-    row("event").append(details);
+    details.dataset.viewKey = `thinking:${thinkingCount++}`;
+    const summary = document.createElement("summary");
+    summary.textContent = t("thread.thinking");
+    thinking = document.createElement("pre");
+    details.append(summary, thinking);
+    const r = row("event");
+    r.dataset.viewKey = details.dataset.viewKey;
+    r.append(details);
   }
   thinking.append(document.createTextNode(delta));
   scrollToBottom();
@@ -699,11 +615,16 @@ export function renderUsage(msg) {
 }
 
 function diffView(diff) {
-  const pre = document.createElement("pre"); pre.className = "diff-view";
+  const pre = document.createElement("pre");
+  pre.className = "diff-view";
   for (const line of diff.split("\n")) {
     const span = document.createElement("span");
-    span.className = line.startsWith("+") ? "diff-add" : line.startsWith("-") ? "diff-remove" : line.startsWith("@@") ? "diff-hunk" : "";
-    span.textContent = line + "\n"; pre.append(span);
+    span.className = /^(\+\+\+|---)(?:\s|$)/.test(line) ? ""
+      : line.startsWith("+") ? "diff-add"
+      : line.startsWith("-") ? "diff-remove"
+      : line.startsWith("@@") ? "diff-hunk" : "";
+    span.textContent = line + "\n";
+    pre.append(span);
   }
   return pre;
 }

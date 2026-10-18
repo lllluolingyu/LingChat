@@ -4,14 +4,15 @@ The browser UI is served straight from ``web/`` (force-included into the
 wheel as ``lingchat/web`` — see pyproject.toml). A renamed or dropped file
 breaks the app only at page load in a browser, which no Python test would
 otherwise notice — so assert that every asset ``index.html`` references is
-actually served, and that every relative ES-module import inside ``web/js/``
-points at a file that exists.
+actually served, and that both UIs' module graphs (including ``/shared/``)
+resolve through their servers.
 """
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
+from urllib.parse import urljoin
 
 from starlette.testclient import TestClient
 
@@ -62,15 +63,70 @@ def test_stylesheet_url_references_resolve():
             )
 
 
-def test_es_module_imports_resolve():
-    js_dir = _WEB_DIR / "js"
-    modules = sorted(js_dir.glob("*.js"))
-    assert modules, "no ES modules found under web/js/"
-    for mod in modules:
-        text = mod.read_text(encoding="utf-8")
-        for spec in re.findall(r'from\s+"(\.{1,2}/[^"]+)"', text):
-            target = (mod.parent / spec).resolve()
-            assert target.is_file(), f"{mod.name} imports missing module {spec}"
+def test_es_module_imports_resolve(tmp_path, app_factory):
+    """Follow browser URLs, including the common /shared mount, on both apps."""
+    legacy = create_app(_write_profile(tmp_path), require_auth=False)
+    gui, _, _ = app_factory()
+    for app in (legacy, gui):
+        with TestClient(app) as client:
+            seen = set()
+            pending = ["/js/main.js", "/js/bootstrap.js"]
+            while pending:
+                path = pending.pop()
+                if path in seen:
+                    continue
+                seen.add(path)
+                response = client.get(path)
+                assert response.status_code == 200, path
+                assert "javascript" in response.headers["content-type"], path
+                for spec in re.findall(r'from\s+"([./][^"]+)"', response.text):
+                    pending.append(urljoin(path, spec))
+            assert "/shared/markdown.js" in seen
+            assert "/shared/command-menu.js" in seen
+            assert "/shared/stream-view.js" in seen
+
+
+def test_browser_policy_and_external_bootstrap(tmp_path, app_factory):
+    legacy = create_app(_write_profile(tmp_path), require_auth=False)
+    gui, _, _ = app_factory()
+    for app in (legacy, gui):
+        with TestClient(app) as client:
+            for path in (
+                "/",
+                "/js/main.js",
+                "/shared/markdown.js",
+                "/missing.js",
+                "/docs/missing",
+                "/openapi.json",
+            ):
+                response = client.get(path)
+                policy = response.headers["content-security-policy"]
+                assert "script-src 'self'" in policy
+                assert "img-src 'self' data:" in policy
+                assert "connect-src 'self'" in policy
+                assert "unsafe-inline" not in policy and "unsafe-eval" not in policy
+                assert response.headers["x-content-type-options"] == "nosniff"
+                assert response.headers["cache-control"] == "no-store"
+            index = client.get("/").text
+            assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", index)
+            assert '<script src="/js/bootstrap.js"></script>' in index
+            assert "localStorage.getItem(" in client.get("/js/bootstrap.js").text
+
+
+def test_generated_documentation_is_exempt_from_browser_csp(tmp_path, app_factory):
+    legacy = create_app(_write_profile(tmp_path), require_auth=False)
+    gui, _, _ = app_factory()
+    for app in (legacy, gui):
+        with TestClient(app) as client:
+            for path in ("/docs", "/redoc", "/docs/oauth2-redirect"):
+                response = client.get(path)
+                assert response.status_code == 200, path
+                assert "text/html" in response.headers["content-type"], path
+                assert "<script" in response.text, path
+                assert "content-security-policy" not in response.headers, path
+                assert response.headers["x-content-type-options"] == "nosniff"
+                assert response.headers["referrer-policy"] == "no-referrer"
+                assert response.headers["cache-control"] == "no-store"
 
 
 def test_stop_edit_and_fork_controls_are_wired():
@@ -105,7 +161,10 @@ def test_attachment_and_confirmation_parity_controls_are_wired():
 
     assert "msg.limits" in main
     assert 'case "shell_allowlist"' in main
-    assert "displayKind" in main
+    from lingchat._web import SHARED_DIR
+
+    assert "displayKind" in (SHARED_DIR / "attachments.js").read_text()
+    assert "createAttachmentQueue" in main
     assert "id: item.id, approved, scope" in connection
     assert 'answerConfirm(true, "session")' in connection
     assert "msg.allowlist_pattern" in main

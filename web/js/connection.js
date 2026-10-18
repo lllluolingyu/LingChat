@@ -202,7 +202,7 @@ export function showConfirm(command, id, pattern = null, runner = "", kind = "sh
 function renderConfirm() {
   const item = confirmQueue[0];
   if (!item) {
-    confirmEl.classList.add("hidden");
+    confirmEl.close();
     return;
   }
   const shell = item.kind !== "action";
@@ -217,7 +217,7 @@ function renderConfirm() {
   confirmAllowSession.textContent = item.pattern
     ? `Allow ${item.pattern} this session`
     : "Allow always this session";
-  confirmEl.classList.remove("hidden");
+  if (!confirmEl.open) confirmEl.showModal();
   confirmDeny.focus(); // safe default for a stray Enter
 }
 
@@ -227,21 +227,21 @@ function answerConfirm(approved, scope = "once") {
   if (confirmQueue.length) {
     renderConfirm();
   } else {
-    confirmEl.classList.add("hidden");
+    confirmEl.close();
     hooks.focusInput();
   }
 }
 
 export function resetConfirms() {
   confirmQueue = [];
-  confirmEl.classList.add("hidden");
+  confirmEl.close();
 }
 
 confirmAllow.addEventListener("click", () => answerConfirm(true));
 confirmAllowSession.addEventListener("click", () => answerConfirm(true, "session"));
 confirmDeny.addEventListener("click", () => answerConfirm(false));
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !confirmEl.classList.contains("hidden")) {
-    answerConfirm(false);
-  }
+// Native modal focus containment; Escape denies just the current queued item.
+confirmEl.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  answerConfirm(false);
 });

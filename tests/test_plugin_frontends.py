@@ -85,13 +85,25 @@ def test_lingcore_backend_resolves_commands_and_closes(tmp_path):
         assert frames[-1].type == "final"
         user = store.turns(session.id)[0]["frames"][0]
         assert user["text"] == "/review  src"
-        await backend.close()
+        frames = [f async for f in backend.edit(0, "/review  changed\n\n")]
+        assert frames[0].type == "edit_accepted"
         assert notices == [agent]
+        current = backend.agent
+        current_close = current.aclose
+
+        async def close_current():
+            notices.append(current)
+            await current_close()
+
+        current.aclose = close_current
+        assert store.turns(session.id)[0]["frames"][0]["text"] == "/review  changed\n\n"
+        await backend.close()
+        assert notices == [agent, current]
         cache.close()
         store.close()
 
     asyncio.run(run())
-    assert captured == ["Review src"]
+    assert captured == ["Review src", "Review changed\n\n"]
 
 
 def test_lingchat_edit_reexpands_and_closes_replaced_and_current_agents(tmp_path):

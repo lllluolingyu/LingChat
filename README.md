@@ -260,4 +260,24 @@ attachment disposition, `nosniff`, and `no-store`.
 
 ```bash
 cd LingChat && uv run pytest -q
+npm run check
+npm test
 ```
+
+The frontend checks require Node 22+ and no npm dependencies or build step.
+Both servers serve the framework-free modules in `lingchat/shared/` at `/shared/`:
+Markdown, slash commands, attachments, notes, and transcript view preservation.
+New shared behavior belongs there; UI-specific composition and protocol handling
+remain in each `web/js/` directory. AgentGUI injects its live `t()` function,
+while LingChat uses the shared modules' English defaults. The shared assets ship
+inside the `lingchat` package in both source and wheel installations.
+
+For the optional Chromium checks (real DOM/focus, replay, editing, attachment
+reads and the production CSP):
+
+```bash
+uv run --with playwright playwright install chromium
+uv run --with playwright python tests/browser_smoke.py
+```
+
+Set `CHROMIUM_EXECUTABLE` to reuse an existing Chromium installation.

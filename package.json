@@ -1,0 +1,10 @@
+{
+  "name": "lingchat-frontend-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/js/*.test.js",
+    "check": "node scripts/check-js.mjs"
+  },
+  "engines": { "node": ">=22" }
+}

@@ -53,6 +53,13 @@ const STRINGS = {
 
   // --- composer -------------------------------------------------------------
   "composer.attach": { en: "Attach files", zh: "添加附件" },
+  "composer.file_too_large": {
+    en: "{name} is too large ({bytes} bytes)",
+    zh: "{name} 太大（{bytes} 字节）",
+  },
+  "composer.read_failed": { en: "Failed to read {name}", zh: "无法读取 {name}" },
+  "composer.unknown_media_type": { en: "unknown media type", zh: "未知媒体类型" },
+  "composer.remove_attachment": { en: "{type} · Remove attachment", zh: "{type} · 移除附件" },
   "composer.send": { en: "Send", zh: "发送" },
   "composer.send_message": { en: "Send message", zh: "发送消息" },
   "composer.stop": { en: "Stop response", zh: "停止回复" },
@@ -172,6 +179,8 @@ const STRINGS = {
     zh: "当前使用 {model}。消息与工具调用会显示在这里。",
   },
   "thread.attachment": { en: "attachment", zh: "附件" },
+  "thread.no_session": { en: "No stored session is active", zh: "没有正在使用的已存会话" },
+  "thread.attachment_download_failed": { en: "Attachment download failed", zh: "附件下载失败" },
   "thread.attached_media": { en: "Attached media", zh: "附带的媒体文件" },
   "thread.download": { en: "Download", zh: "下载" },
   "thread.download_failed": { en: "Failed", zh: "失败" },

@@ -15,7 +15,8 @@ import {
   todoCounts,
   resetPendingTools,
   resolveToolCard,
-  scrollToBottom,
+  captureThreadView,
+  restoreThreadView,
   showEmptyState,
 } from "./thread.js";
 
@@ -49,6 +50,7 @@ export function takePendingForkEdit(id) {
 // Adopt the server-confirmed session id (from "hello") and mirror it into the
 // URL hash so a reload resumes the same conversation.
 export function adoptSession(id) {
+  if ((id || null) !== sessionId) threadGen++;
   sessionId = id || null;
   if (sessionId) history.replaceState(null, "", `#${sessionId}`);
   else history.replaceState(null, "", location.pathname);
@@ -155,6 +157,11 @@ function sessionItem(s) {
   const item = document.createElement("div");
   item.className = "session-item" + (s.id === sessionId ? " active" : "");
 
+  const select = document.createElement("button");
+  select.type = "button";
+  select.className = "session-select";
+  if (s.id === sessionId) select.setAttribute("aria-current", "true");
+
   const title = document.createElement("div");
   title.className = "session-title";
   title.textContent = s.title || "New chat";
@@ -167,8 +174,10 @@ function sessionItem(s) {
   actions.className = "session-actions";
 
   const rename = document.createElement("button");
+  rename.type = "button";
   rename.className = "icon-btn";
   rename.title = "Rename";
+  rename.setAttribute("aria-label", rename.title);
   rename.innerHTML =
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.8 3.1l3.1 3.1L6 13.1l-3.6.5.5-3.6zM11.6 1.3l3.1 3.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   rename.addEventListener("click", (e) => {
@@ -177,8 +186,10 @@ function sessionItem(s) {
   });
 
   const del = document.createElement("button");
+  del.type = "button";
   del.className = "icon-btn danger";
   del.title = "Delete";
+  del.setAttribute("aria-label", del.title);
   del.innerHTML =
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.8 4.2h10.4M6.2 4V2.8h3.6V4M4 4.2l.7 9a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9l.7-9M6.5 7v4.4M9.5 7v4.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   del.addEventListener("click", (e) => {
@@ -187,11 +198,13 @@ function sessionItem(s) {
       item.classList.add("confirm-delete");
       title.textContent = "Delete this chat?";
       del.title = "Click again to confirm";
+      del.setAttribute("aria-label", del.title);
       setTimeout(() => {
         if (item.isConnected && item.classList.contains("confirm-delete")) {
           item.classList.remove("confirm-delete");
           title.textContent = s.title || "New chat";
           del.title = "Delete";
+          del.setAttribute("aria-label", del.title);
         }
       }, 3200);
       return;
@@ -200,8 +213,9 @@ function sessionItem(s) {
   });
 
   actions.append(rename, del);
-  item.append(title, time, actions);
-  item.addEventListener("click", () => {
+  select.append(title, time);
+  item.append(select, actions);
+  select.addEventListener("click", () => {
     closeSidebar();
     switchSession(s.id);
   });
@@ -214,7 +228,9 @@ function startRename(item, titleEl, s) {
   input.className = "session-rename-input";
   input.value = s.title || "";
   input.placeholder = "Session name";
-  titleEl.replaceWith(input);
+  const select = titleEl.closest(".session-select");
+  input.setAttribute("aria-label", input.placeholder);
+  select.replaceWith(input);
   input.focus();
   input.select();
 
@@ -223,13 +239,16 @@ function startRename(item, titleEl, s) {
     if (done) return;
     done = true;
     const value = input.value.trim();
-    input.replaceWith(titleEl);
+    input.replaceWith(select);
     if (save && value && value !== s.title) renameSession(s.id, value);
   };
   input.addEventListener("click", (e) => e.stopPropagation());
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") finish(true);
-    else if (e.key === "Escape") finish(false);
+    if (e.isComposing) return;
+    if (e.key !== "Enter" && e.key !== "Escape") return;
+    e.preventDefault();
+    finish(e.key === "Enter");
+    select.focus();
   });
   input.addEventListener("blur", () => finish(true));
 }
@@ -299,7 +318,8 @@ function renderHistory(messages, events = []) {
   // streaming event shapes main.js deals in. Durable runtime events are
   // anchored after a stable message seq, so replay recreates their original
   // position even after a restart or Edit branch.
-  clearThread();
+  const view = captureThreadView();
+  clearThread(true);
   const byMessage = new Map();
   const orderedEvents = [...events].sort(
     (left, right) => (left.event_seq ?? -1) - (right.event_seq ?? -1),
@@ -328,13 +348,14 @@ function renderHistory(messages, events = []) {
   }
   resetPendingTools(); // anything unresolved belongs to a crashed turn; don't pair it later
   if (!messages.length) showEmptyState();
-  scrollToBottom(true);
+  restoreThreadView(view);
 }
 
 // --- switching ---------------------------------------------------------------
 
 function switchSession(id, forkEdit = null) {
   if (id === sessionId) return;
+  threadGen++;
   pendingForkEdit = forkEdit;
   sessionId = id;
   history.replaceState(null, "", `#${id}`);
@@ -394,6 +415,7 @@ export async function forkCurrentSession(throughSeq, regenerateText = undefined)
 export function newChat() {
   closeSidebar();
   pendingForkEdit = null;
+  threadGen++;
   sessionId = null;
   history.replaceState(null, "", location.pathname);
   reconnectNow();
