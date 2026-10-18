@@ -963,7 +963,7 @@ requires-dist = [
     { name = "anthropic", specifier = "==1.11.0" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "openai", specifier = "==2.41.0" },
-    { name = "playwright", marker = "extra == 'browser'", specifier = "==1.63.0" },
+    { name = "playwright", marker = "extra == 'browser'", specifier = "==1.64.0" },
     { name = "prompt-toolkit", specifier = "==3.0.53" },
     { name = "pydantic", specifier = "==2.13.4" },
     { name = "pymupdf", marker = "extra == 'pdf'", specifier = "==1.27.2.3" },
@@ -979,7 +979,7 @@ provides-extras = ["browser", "pdf", "telegram"]
 [package.metadata.requires-dev]
 dev = [
     { name = "mypy", specifier = "==2.3.0" },
-    { name = "playwright", specifier = "==1.63.0" },
+    { name = "playwright", specifier = "==1.64.0" },
     { name = "pymupdf", specifier = "==1.27.2.3" },
     { name = "pytest", specifier = "==9.0.3" },
     { name = "pytest-asyncio", specifier = "==1.4.0" },
