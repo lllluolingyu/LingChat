@@ -318,3 +318,52 @@ def test_non_shell_confirmation_is_a_plain_action(tmp_path):
         )
         frames = _receive_until(ws, "turn_end")
         assert not any(frame["type"] == "shell_allowlist" for frame in frames)
+
+
+def test_background_process_confirmation_is_never_session_allowlisted(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    profile = tmp_path / "config.yaml"
+    profile.write_text(
+        "name: dev\n"
+        f"workspace: {workspace}\n"
+        "llm:\n"
+        "  model: fake\n"
+        "plugins: [process]\n"
+        "tools: [process_start]\n"
+        "tool_options:\n"
+        "  run_shell:\n"
+        "    sandbox:\n"
+        "      backend: bubblewrap\n",
+        encoding="utf-8",
+    )
+    turns = [
+        {
+            "tool_calls": [
+                ToolCall(
+                    id="start",
+                    name="process_start",
+                    arguments={"command": "npm run dev"},
+                )
+            ]
+        },
+        {"text": "done"},
+    ]
+    app = create_app(profile, require_auth=False, llm_factory=lambda: FakeLLM(turns))
+
+    with TestClient(app).websocket_connect("/ws") as ws:
+        ws.receive_json()
+        ws.send_json({"type": "user", "text": "start it"})
+        confirm = _confirm(ws)
+        # Command framing, but no "allow this session": that would write the
+        # run_shell allowlist.
+        assert confirm["kind"] == "process"
+        assert confirm["command"] == "npm run dev"
+        assert confirm["runner"] == "bubblewrap"
+        assert "allowlist_pattern" not in confirm
+        ws.send_json(
+            {"type": "confirm_response", "id": confirm["id"], "approved": False}
+        )
+        frames = _receive_until(ws, "turn_end")
+        (result,) = [f for f in frames if f["type"] == "tool_result"]
+        assert not result["ok"] and "declined" in result["content"]

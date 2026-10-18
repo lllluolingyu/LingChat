@@ -206,10 +206,17 @@ function renderConfirm() {
     return;
   }
   const shell = item.kind !== "action";
-  confirmTitle.textContent = shell ? "Run shell command?" : "Approve action?";
-  confirmSub.textContent = shell
-    ? "The agent wants to execute this in the workspace."
-    : "The agent needs your approval to continue.";
+  const process = item.kind === "process";
+  confirmTitle.textContent = process
+    ? "Start background process?"
+    : shell
+      ? "Run shell command?"
+      : "Approve action?";
+  confirmSub.textContent = process
+    ? "The agent wants to keep this running in the workspace until it is stopped."
+    : shell
+      ? "The agent wants to execute this in the workspace."
+      : "The agent needs your approval to continue.";
   confirmCmd.textContent = item.command;
   confirmRunner.textContent = item.runner ? `Runner: ${item.runner}` : "";
   confirmRunner.hidden = !item.runner;

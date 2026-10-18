@@ -387,6 +387,9 @@ class WebSession:
         # and an approval is never misrouted to the wrong command.
         self._pending_confirms: dict[str, _PendingConfirm] = {}
         self._turn_shell_commands: set[str] = set()
+        # process_start commands: command framing, never "allow this session"
+        # (that writes run_shell's allowlist).
+        self._turn_process_commands: set[str] = set()
         self._run_lock = asyncio.Lock()
         # Exactly one turn may be active. This makes Stop deterministic and
         # rejects accidental double-submits instead of silently queueing them.
@@ -421,14 +424,15 @@ class WebSession:
         pattern = self._allowlist_pattern(command)
         # Only this turn's run_shell commands are shell prompts; anything else
         # (a non-public fetch, a skill activation) is a plain approval.
-        shell = command in self._turn_shell_commands
+        process = command in self._turn_process_commands
+        shell = not process and command in self._turn_shell_commands
         message: dict[str, Any] = {
             "type": "confirm",
             "id": cid,
             "command": command,
-            "kind": "shell" if shell else "action",
+            "kind": "process" if process else "shell" if shell else "action",
         }
-        if shell:
+        if shell or process:
             message["runner"] = shell_runner_label(self._tool_options)
         if pattern is not None:
             message["allowlist_pattern"] = pattern
@@ -439,7 +443,10 @@ class WebSession:
             self._pending_confirms.pop(cid, None)
 
     def _allowlist_pattern(self, command: str) -> str | None:
-        if command not in self._turn_shell_commands:
+        if (
+            command not in self._turn_shell_commands
+            or command in self._turn_process_commands
+        ):
             return None
         pattern = allowlist_pattern_for(command)
         return pattern or None
@@ -565,6 +572,7 @@ class WebSession:
         # Serialize turns so one connection's runs share memory safely.
         async with self._run_lock:
             self._turn_shell_commands.clear()
+            self._turn_process_commands.clear()
             turn = self.agent.run(incoming)
             try:
                 # A failure in the loop body does not make ``async for`` close
@@ -573,13 +581,13 @@ class WebSession:
                 # task exits, rather than leaving cleanup to asyncgen GC.
                 async with aclosing(turn):
                     async for event in turn:
-                        if (
-                            isinstance(event, ToolCallStarted)
-                            and event.call.name == "run_shell"
-                        ):
+                        if isinstance(event, ToolCallStarted):
                             command = event.call.arguments.get("command")
                             if isinstance(command, str):
-                                self._turn_shell_commands.add(command)
+                                if event.call.name == "run_shell":
+                                    self._turn_shell_commands.add(command)
+                                elif event.call.name == "process_start":
+                                    self._turn_process_commands.add(command)
                         if isinstance(event, (Final, Error)):
                             self._turn_terminal = True
                         await self.ws.send_json(_event_to_msg(event))

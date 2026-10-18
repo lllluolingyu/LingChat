@@ -156,6 +156,7 @@ class LingCoreBackend(BackendBase):
         self.profile: AgentProfile
         self.options: dict[str, Any]
         self.shell_commands: set[str] = set()
+        self.process_commands: set[str] = set()
 
     async def start(self, session: SessionRecord, approve: ApproveFn) -> None:
         await super().start(session, approve)
@@ -217,12 +218,21 @@ class LingCoreBackend(BackendBase):
     async def confirm(self, prompt: str) -> bool:
         # No level refuses on the user's behalf any more: under ``ask`` the empty
         # allow-list means every command arrives here for them to decide.
-        shell = prompt in self.shell_commands
+        # process_start is command-framed but never "session": that would
+        # write the run_shell allowlist.
+        process = prompt in self.process_commands
+        shell = not process and prompt in self.shell_commands
         pattern = allowlist_pattern_for(prompt) if shell else None
+        if process:
+            kind, title = "shell", "Start background process?"
+        elif shell:
+            kind, title = "shell", "Run shell command?"
+        else:
+            kind, title = "other", "Approve tool action?"
         answer = await self.approve(
             ApprovalRequest(
-                "shell" if shell else "other",
-                "Run shell command?" if shell else "Approve tool action?",
+                kind,
+                title,
                 prompt,
                 options=["once", "session", "deny"] if pattern else ["once", "deny"],
             )
@@ -249,16 +259,17 @@ class LingCoreBackend(BackendBase):
         )
         self.task = asyncio.current_task()
         self.shell_commands.clear()
+        self.process_commands.clear()
         try:
             async with aclosing(self.agent.run(incoming)) as stream:
                 async for event in stream:
-                    if (
-                        isinstance(event, ToolCallStarted)
-                        and event.call.name == "run_shell"
-                    ):
+                    if isinstance(event, ToolCallStarted):
                         command = event.call.arguments.get("command")
                         if isinstance(command, str):
-                            self.shell_commands.add(command)
+                            if event.call.name == "run_shell":
+                                self.shell_commands.add(command)
+                            elif event.call.name == "process_start":
+                                self.process_commands.add(command)
                     yield event_frame(event)
         finally:
             self.task = None

@@ -286,3 +286,25 @@ async def test_edit_writes_the_workspace_without_asking(app_factory):
         # No approval frame: that is what distinguishes this level from `ask`.
         assert not [f for f in frames if f["type"] == "approval"]
         assert (Path(rec.workspace) / "good.txt").read_text() == "good"
+
+
+async def test_background_process_approval_never_offers_session_scope():
+    from agentgui.backends.lingcore_backend import LingCoreBackend
+
+    # Only the confirmation framing is under test, so skip session start-up.
+    backend = LingCoreBackend.__new__(LingCoreBackend)
+    backend.shell_commands = {"npm run dev"}
+    backend.process_commands = {"npm run dev"}
+    backend.options = {}
+    seen = []
+
+    async def approve(request):
+        seen.append(request)
+        return "session"
+
+    backend.approve = approve
+    assert await backend.confirm("npm run dev")
+    (request,) = seen
+    assert request.title == "Start background process?" and request.kind == "shell"
+    assert request.options == ["once", "deny"]
+    assert backend.options == {}  # nothing reached the run_shell allowlist
