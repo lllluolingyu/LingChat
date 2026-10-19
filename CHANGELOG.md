@@ -5,6 +5,8 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-19
+
 ### Added
 
 - JavaScript behavior tests for shared browser modules, run in CI without npm
@@ -22,6 +24,8 @@ Notable user-facing LingChat changes are documented here. The project follows
 - Both servers set a strict content security policy, prevent MIME sniffing and
   referrer disclosure, and disable response caching. Theme and language setup
   runs from external scripts before first paint.
+- LingCore's `process_start` confirmations use command framing in both frontends
+  without offering a session allowlist option.
 
 ### Fixed
 
@@ -249,7 +253,8 @@ Notable user-facing LingChat changes are documented here. The project follows
 - Initial browser frontend with authenticated WebSocket streaming, tool
   confirmation, multimodal attachments, and profile-scoped session history.
 
-[Unreleased]: https://github.com/lllluolingyu/LingChat/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/lllluolingyu/LingChat/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/lllluolingyu/LingChat/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/lllluolingyu/LingChat/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/lllluolingyu/LingChat/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/lllluolingyu/LingChat/compare/v0.2.0...v0.3.0
