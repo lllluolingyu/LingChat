@@ -5,6 +5,8 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-19
+
 ### Changed
 
 - LingChat and AgentGUI require LingCore 0.5.0 or a later 0.5.x
@@ -281,7 +283,8 @@ Notable user-facing LingChat changes are documented here. The project follows
 - Initial browser frontend with authenticated WebSocket streaming, tool
   confirmation, multimodal attachments, and profile-scoped session history.
 
-[Unreleased]: https://github.com/lllluolingyu/LingChat/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/lllluolingyu/LingChat/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/lllluolingyu/LingChat/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/lllluolingyu/LingChat/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/lllluolingyu/LingChat/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/lllluolingyu/LingChat/compare/v0.3.1...v0.4.0
