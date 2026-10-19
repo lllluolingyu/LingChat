@@ -69,7 +69,14 @@ def tool_kind(name: str) -> str:
         return "read"
     if key in {"glob", "grep", "search", "search_files"}:
         return "search"
-    if key in {"webfetch", "websearch", "websearchcall", "web_search", "fetch_url"}:
+    if key in {
+        "webfetch",
+        "websearch",
+        "websearchcall",
+        "web_search",
+        "search_web",
+        "fetch_url",
+    }:
         return "web"
     return "other"
 

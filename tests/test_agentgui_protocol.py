@@ -9,3 +9,4 @@ def test_frames_and_decisions_are_fail_closed():
     assert decision("yes") == "deny"
     assert tool_kind("mcp__server") == "mcp"
     assert tool_kind("Edit") == "edit"
+    assert tool_kind("search_web") == tool_kind("fetch_url") == "web"

@@ -5,6 +5,18 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ## [Unreleased]
 
+### Changed
+
+- AgentGUI's `ask` mode on LingCore keeps `calendar_list`, which only reads the
+  profile's calendar; adding and removing events stays limited to `edit` mode.
+
+### Fixed
+
+- AgentGUI's `ask` mode on LingCore keeps web search again. Its read-only tool
+  list named `web_search`, but LingCore's tool is `search_web`, so the mode
+  silently dropped it.
+- LingCore's `search_web` calls render as web tool cards instead of "other".
+
 ## [0.5.0] - 2026-10-19
 
 ### Changed

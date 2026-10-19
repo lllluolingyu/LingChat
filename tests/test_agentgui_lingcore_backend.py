@@ -43,6 +43,38 @@ def test_lingcore_stream_is_unified(tmp_path: Path):
     assert frames[-1]["type"] == "final"
 
 
+def test_ask_mode_keeps_only_tools_that_read_or_ask(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    profile = tmp_path / "config.yaml"
+    profile.write_text(
+        f"name: fake\nworkspace: {workspace}\nllm:\n  model: fake\n"
+        "tools: [read_file, write_file, fetch_url, todo_write, calendar_add,"
+        " calendar_list, calendar_remove]\n"
+    )
+
+    async def run(autonomy):
+        store = Store(tmp_path / f"{autonomy}.db")
+        entry = ModelEntry(
+            "fake", "Fake", "lingcore", options={"profile": str(profile)}
+        )
+        session = store.create(entry, str(workspace), autonomy=autonomy)
+        backend = LingCoreBackend(store, ProfileCache(), FakeLLM)
+        await backend.start(session, lambda request: asyncio.sleep(0, result="deny"))
+        tools = list(backend.profile.tools)
+        await backend.close()
+        store.close()
+        return tools
+
+    assert asyncio.run(run("ask")) == [
+        "read_file",
+        "fetch_url",
+        "todo_write",
+        "calendar_list",
+    ]
+    assert "calendar_remove" in asyncio.run(run("edit"))
+
+
 def test_lingcore_todos_become_frames_and_survive_history_rebuild(tmp_path: Path):
     from lingcore.message import ToolCall
 

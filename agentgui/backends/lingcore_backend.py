@@ -191,8 +191,9 @@ class LingCoreBackend(BackendBase):
                 "read_file",
                 "list_dir",
                 "search",
-                "web_search",
+                "search_web",
                 "fetch_url",
+                "calendar_list",
                 "run_shell",
                 # Only rewrites the agent's own in-memory checklist.
                 "todo_write",
