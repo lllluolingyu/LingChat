@@ -97,13 +97,12 @@ LingChat shows the same: its `usage` messages carry `scope: "request"` and
 `cache_in_input: true`, live `TurnStatsReported` becomes `timing`, and stored
 stats replay as `turn_stats` entries in `GET /api/sessions/{id}` `events`. Both
 UIs share the accounting and rendering (`lingchat/shared/usage.js`,
-`usage-view.js`). Against a LingCore older than this feature, usage still
-streams live but turns carry no stored stats or timing.
+`usage-view.js`).
 
 ## Install and run
 
-This checkout requires Python 3.11 or newer and LingCore 0.4.x
-(`lingcore>=0.4.0,<0.5.0`). A packaged installation resolves the compatible
+This checkout requires Python 3.11 or newer and LingCore 0.4.2 or a later 0.4.x
+(`lingcore>=0.4.2,<0.5.0`). A packaged installation resolves the compatible
 core automatically:
 
 ```bash

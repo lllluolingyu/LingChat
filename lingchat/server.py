@@ -62,9 +62,11 @@ from lingcore.events import (
     SkillActivated,
     StreamRetry,
     TextDelta,
+    TodoUpdated,
     ToolCallStarted,
     ToolResultEvent,
     TurnCancelled,
+    TurnStatsReported,
     UsageReported,
 )
 from lingcore.media import attachment_from_wire
@@ -85,16 +87,11 @@ from lingcore.sessions import (
     new_session_id,
     open_store,
 )
+from lingcore.todos import todos_from_payload
 from lingcore.tools.builtin.shell import allowlist_pattern_for
-from lingcore.usage import TokenUsage
+from lingcore.usage import TokenUsage, turn_stats_from_payload
 from pydantic import BaseModel, Field, StrictInt
 
-from lingchat._compat import (
-    TodoUpdated,
-    TurnStatsReported,
-    todos_from_payload,
-    turn_stats_from_payload,
-)
 from lingchat._web import install_browser_assets
 
 

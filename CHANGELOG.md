@@ -15,10 +15,15 @@ Notable user-facing LingChat changes are documented here. The project follows
 - Each reply shows its token usage and finish time beside its actions.
 - `usage` frames state their `scope` and whether cached tokens are inside
   `input` (`cache_in_input`); each turn also sends a `timing` frame.
-- With LingCore 0.4.2 or newer, per-turn usage and timing come from LingCore's
-  own `turn_stats` session events, so they survive reloads, Stop, Edit and Fork.
-  LingChat replays them through the session `events`; older cores still stream
-  usage live.
+- Per-turn usage and timing come from LingCore's own `turn_stats` session
+  events, so they survive reloads, Stop, Edit and Fork. LingChat replays them
+  through the session `events`.
+
+### Changed
+
+- LingChat and AgentGUI require LingCore 0.4.2 or a later 0.4.x
+  (`lingcore>=0.4.2,<0.5.0`), so every session stores its per-turn usage and
+  timing. The import shims for older cores are removed.
 
 ## [0.4.1] - 2026-10-19
 
