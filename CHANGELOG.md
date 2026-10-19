@@ -5,6 +5,14 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ## [Unreleased]
 
+### Changed
+
+- LingChat and AgentGUI require LingCore 0.5.0 or a later 0.5.x
+  (`lingcore>=0.5.0,<0.6.0`). With LingCore 0.5's daily profile, the
+  transcript keeps showing only what the user typed: the clock line the
+  `clock` plugin adds to each message reaches the model, not the page, and an
+  edited message gets a fresh one when it is regenerated.
+
 ## [0.4.2] - 2026-10-19
 
 ### Added
