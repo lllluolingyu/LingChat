@@ -5,6 +5,8 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-19
+
 ### Added
 
 - A session line under the composer in both frontends replaces the keyboard
@@ -266,7 +268,8 @@ Notable user-facing LingChat changes are documented here. The project follows
 - Initial browser frontend with authenticated WebSocket streaming, tool
   confirmation, multimodal attachments, and profile-scoped session history.
 
-[Unreleased]: https://github.com/lllluolingyu/LingChat/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/lllluolingyu/LingChat/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/lllluolingyu/LingChat/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/lllluolingyu/LingChat/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/lllluolingyu/LingChat/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/lllluolingyu/LingChat/compare/v0.3.0...v0.3.1
