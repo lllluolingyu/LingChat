@@ -57,7 +57,8 @@ import {
   setAttachmentDownloadHandler,
   setCapabilities,
   appendThinking,
-  renderUsage,
+  recordTiming,
+  recordUsage,
   showTyping,
   stickToBottom,
   addAgentMarkdown,
@@ -174,7 +175,6 @@ function handle(msg) {
       currentCapabilities = msg.capabilities || {};
       setCapabilities(currentCapabilities);
       $("fork-chat").hidden = !currentCapabilities.fork;
-      $("usage-chip").hidden = true;
       fileInputEl.accept = currentCapabilities.files ? "" : "image/png,image/jpeg,image/gif,image/webp";
       attachEl.hidden = !currentCapabilities.images && !currentCapabilities.files;
       agentChip.textContent = `${msg.model} · ${msg.autonomy}`;
@@ -300,7 +300,10 @@ function handle(msg) {
       addNote(msg.level === "warning" ? "error" : "system", msg.text || "");
       break;
     case "usage":
-      renderUsage(msg);
+      recordUsage(msg);
+      break;
+    case "timing":
+      recordTiming(msg);
       break;
   }
 }

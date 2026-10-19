@@ -10,6 +10,7 @@
 import { createNotes } from "/shared/notes.js";
 import { createStreamView } from "/shared/stream-view.js";
 import { captureView, restoreView } from "/shared/thread-view.js";
+import { createUsageView } from "/shared/usage-view.js";
 import { renderMarkdown, attachCopyHandler, COPY_ICON_SVG } from "./markdown.js";
 
 const $ = (id) => document.getElementById(id);
@@ -27,6 +28,9 @@ let modelName = "";
 let editHandler = null; // (seq, editedText) => boolean, injected by main.js
 let forkHandler = null; // async (seq, regenerateText?) => boolean, injected by main.js
 let attachmentDownloadHandler = null; // async (seq, index, name), injected by main.js
+// Per-reply usage and the session line under the composer; see usage-view.js.
+const usage = createUsageView({ row });
+export const { recordUsage, recordTiming, closeReply } = usage;
 
 export function setAgentIdentity(name, model) {
   agentName = name || "the agent";
@@ -275,6 +279,7 @@ function startUserEdit(r, bubble, actions, text, attachments, seq) {
 }
 
 export function addUserMessage(text, attachments = [], synthetic = false, seq = null) {
+  if (!synthetic) usage.beginReply();
   const r = row(synthetic ? "event" : "user");
   const bubble = document.createElement("div");
   bubble.className = synthetic ? "note system media-note" : "bubble-user";
@@ -356,6 +361,7 @@ function appendAgentActions(col, raw, seq = null) {
   actions.appendChild(copy);
   if (Number.isInteger(seq)) actions.appendChild(forkButton(seq));
   col.appendChild(actions);
+  usage.setReplyActions(actions);
 }
 
 export function finalizeAgentMessage(finalText) {
@@ -471,6 +477,7 @@ export function addToolCard(id, name, args) {
   card.append(summary, body);
   r.appendChild(card);
   pendingTools.push({ id: id || null, name, status, body });
+  usage.step();
   scrollToBottom();
   return card;
 }
@@ -552,6 +559,7 @@ export function clearThread(preserveView = false) {
   typingEl = null;
   stick = !preserveView;
   jumpBtn.hidden = stick;
+  usage.reset();
 }
 
 attachCopyHandler(threadEl);

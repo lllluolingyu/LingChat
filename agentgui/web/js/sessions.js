@@ -15,9 +15,11 @@ import {
   addToolCard,
   addUserMessage,
   clearThread,
+  closeReply,
   appendThinking,
   todoCounts,
-  renderUsage,
+  recordTiming,
+  recordUsage,
   resetPendingTools,
   resolveToolCard,
   captureThreadView,
@@ -334,7 +336,8 @@ function renderHistory(turns) {
         case "tool_result":
           flush(); resolveToolCard(frame.id, frame.name, frame.ok, frame.content || "", frame.attachments || [], frame.diff); break;
         case "final": if (!sawText && frame.content) text = frame.content; break;
-        case "usage": renderUsage(frame); break;
+        case "usage": recordUsage(frame); break;
+        case "timing": recordTiming(frame); break;
         case "todos": {
           flush();
           const { done, total } = todoCounts(frame.todos);
@@ -351,6 +354,7 @@ function renderHistory(turns) {
     }
     flush(turn.seq);
   }
+  closeReply();
   resetPendingTools();
   if (!turns.length) showEmptyState();
   restoreThreadView(view);

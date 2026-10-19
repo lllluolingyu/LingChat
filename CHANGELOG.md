@@ -5,6 +5,19 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- A session line under the composer in both frontends replaces the keyboard
+  hint: turns, tool steps, output throughput, total tokens, cache-hit rate, and
+  context use when the backend reports it.
+- Each reply shows its token usage and finish time beside its actions.
+- `usage` frames state their `scope` and whether cached tokens are inside
+  `input` (`cache_in_input`); each turn also sends a `timing` frame.
+- With LingCore 0.4.2 or newer, per-turn usage and timing come from LingCore's
+  own `turn_stats` session events, so they survive reloads, Stop, Edit and Fork.
+  LingChat replays them through the session `events`; older cores still stream
+  usage live.
+
 ## [0.4.1] - 2026-10-19
 
 ### Added

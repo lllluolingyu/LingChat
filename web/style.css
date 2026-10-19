@@ -829,6 +829,21 @@ main#messages {
 .msg-actions .copy-btn.copied { color: var(--ok); }
 .msg-actions .fork-btn { color: var(--muted-solid); }
 
+/* A reply's usage and finish time ride along with its actions. */
+.reply-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  margin-left: 10px;
+  font-size: 12px;
+  color: var(--muted-solid);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.reply-usage { display: inline-flex; align-items: center; gap: 5px; }
+.reply-usage svg { width: 13px; height: 13px; }
+.reply-meta-row .reply-meta { margin-left: 0; }
+
 /* events (tool cards, notes) share the agent indent so the thread aligns */
 .row.event { padding-left: 42px; }
 .row.event + .row.event { margin-top: -10px; }
@@ -1353,22 +1368,29 @@ main#messages {
   cursor: not-allowed;
 }
 
-.composer-hint {
+/* Background rank: a line of figures to glance at, never to read first. */
+.session-stats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px 22px;
   margin: 8px 4px 0;
-  text-align: center;
   font-size: 11.5px;
   color: var(--muted-solid);
+  font-variant-numeric: tabular-nums;
   user-select: none;
 }
-kbd {
-  font-family: var(--mono);
-  font-size: 10px;
-  padding: 1px 5px;
-  border: 1px solid var(--border);
-  border-bottom-width: 2px;
-  border-radius: 6px;
-  background: var(--glass-bg);
+.session-stats[hidden], .session-stats .stat[hidden] { display: none; }
+.session-stats .stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
 }
+.session-stats svg { width: 13px; height: 13px; flex-shrink: 0; }
+.context-ring circle { fill: none; stroke-width: 2.2; }
+.context-ring .ring-track { stroke: var(--border-strong); }
+.context-ring .ring-fill { stroke: currentColor; stroke-linecap: round; }
 
 /* ------------------------------------------------------------------- modal */
 
@@ -1564,7 +1586,7 @@ kbd {
   .agent-chip { display: none; }
   #thread { padding: 20px 14px 12px; gap: 16px; }
   #composer { padding-left: 12px; padding-right: 12px; }
-  .composer-hint { display: none; }
+  .session-stats { gap: 2px 14px; font-size: 11px; }
   .row.event { padding-left: 0; }
   .bubble-user { max-width: 88%; }
   .input-shell { border-radius: var(--radius-lg); }

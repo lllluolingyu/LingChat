@@ -53,6 +53,8 @@ import {
   setEditHandler,
   setForkHandler,
   addTodoCard,
+  recordTiming,
+  recordUsage,
   todoCounts,
 } from "./thread.js";
 
@@ -280,6 +282,12 @@ function handle(msg) {
       hideTyping();
       addNote("error", msg.message);
       pendingTurnNotes.push({ kind: "error", text: msg.message });
+      break;
+    case "usage":
+      recordUsage(msg);
+      break;
+    case "timing":
+      recordTiming(msg);
       break;
   }
 }

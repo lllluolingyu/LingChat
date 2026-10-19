@@ -246,6 +246,7 @@ class CodexBackend(BackendBase):
                         ],
                         scope="conversation",
                         cumulative=True,
+                        cache_in_input=True,
                         input=total["inputTokens"],
                         output=total["outputTokens"],
                         cached=total["cachedInputTokens"],

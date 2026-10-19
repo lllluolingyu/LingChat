@@ -267,9 +267,11 @@ class ClaudeBackend(BackendBase):
                         ],
                         scope="turn",
                         cumulative=True,
+                        cache_in_input=False,
                         input=usage.get("input_tokens", 0),
                         output=usage.get("output_tokens", 0),
                         cached=usage.get("cache_read_input_tokens", 0),
+                        cache_write=usage.get("cache_creation_input_tokens", 0),
                         cost_usd=message.total_cost_usd,
                     )
                     if self.stopping:

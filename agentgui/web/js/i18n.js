@@ -66,8 +66,6 @@ const STRINGS = {
   "composer.message": { en: "Message", zh: "消息" },
   "composer.placeholder": { en: "Message the agent…", zh: "给智能体发消息…" },
   "composer.placeholder_named": { en: "Message {name}…", zh: "给 {name} 发消息…" },
-  "composer.hint_send": { en: "to send", zh: "发送" },
-  "composer.hint_newline": { en: "for a new line", zh: "换行" },
   "composer.jump_latest": { en: "Scroll to latest", zh: "回到最新消息" },
   "composer.commands": { en: "Commands", zh: "命令" },
   "composer.commands_keys": {
@@ -250,10 +248,24 @@ const STRINGS = {
     zh: "上下文已压缩：摘要了{label}（{before} → {after} tokens）。",
   },
 
-  // --- usage chip -----------------------------------------------------------
-  "usage.tokens": { en: "{input} in · {output} out", zh: "输入 {input} · 输出 {output}" },
-  "usage.context": { en: "{pct}% context", zh: "上下文 {pct}%" },
-  "usage.cached": { en: "{count} cached tokens", zh: "缓存 {count} tokens" },
+  // --- usage: per reply and the session line under the composer -------------
+  "usage.breakdown": {
+    en: "{prompt} prompt ({cached} cached) · {output} output tokens",
+    zh: "输入 {prompt}（缓存 {cached}）· 输出 {output} tokens",
+  },
+  "reply.usage": { en: "{total} tok", zh: "用量 {total} tok" },
+  "stats.turns_one": { en: "1 turn", zh: "1 轮" },
+  "stats.turns": { en: "{count} turns", zh: "{count} 轮" },
+  "stats.steps_one": { en: "1 step", zh: "1 步" },
+  "stats.steps": { en: "{count} steps", zh: "{count} 步" },
+  "stats.pace": { en: "{turns}, {steps}", zh: "{turns} {steps}" },
+  "stats.rate": { en: "{rate} tok/s", zh: "{rate} tok/s" },
+  "stats.rate_title": {
+    en: "Output tokens per second of generation, not counting time spent in tools or waiting for approval",
+    zh: "每秒输出 tokens，按生成时间计算，不含工具执行与等待审批的时间",
+  },
+  "stats.cache_hit": { en: "{pct}% cache hit", zh: "缓存命中 {pct}%" },
+  "stats.context_title": { en: "{pct}% of the context window used", zh: "已用上下文窗口 {pct}%" },
 };
 
 /** Merge a consumer's strings in (same `{key: {en, zh}}` shape) and repaint. */

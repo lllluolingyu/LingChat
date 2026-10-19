@@ -8,6 +8,11 @@ from uuid import uuid4
 
 Decision = Literal["once", "session", "deny"]
 
+# Transcript frames no native history carries. A backend that rebuilds GUI turns
+# from its own history must keep these, or replay loses them. (LingCore keeps
+# usage and timing itself, as turn_stats events, so they are rebuilt instead.)
+STATUS_FRAMES = frozenset({"error", "cancelled", "notice", "plugin_notice"})
+
 
 @dataclass(slots=True)
 class Frame:

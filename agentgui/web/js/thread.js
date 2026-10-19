@@ -11,8 +11,9 @@
 import { createNotes } from "/shared/notes.js";
 import { createStreamView } from "/shared/stream-view.js";
 import { captureView, restoreView } from "/shared/thread-view.js";
+import { createUsageView } from "/shared/usage-view.js";
 import { renderMarkdown, attachCopyHandler, COPY_ICON_SVG } from "./markdown.js";
-import { t } from "./i18n.js";
+import { lang, t } from "./i18n.js";
 import { markFor } from "./marks.js";
 
 const $ = (id) => document.getElementById(id);
@@ -34,6 +35,9 @@ let attachmentDownloadHandler = null; // async (seq, index, name), injected by m
 let capabilities = {};
 let thinking = null;
 let thinkingCount = 0;
+// Per-reply usage and the session line under the composer; see usage-view.js.
+const usage = createUsageView({ row, t, locale: lang });
+export const { recordUsage, recordTiming, closeReply } = usage;
 
 // `backend` comes from the server's "hello"; it decides which mark the avatar,
 // the empty state and the typing row draw.
@@ -287,6 +291,7 @@ function startUserEdit(r, bubble, actions, text, attachments, seq) {
 
 export function addUserMessage(text, attachments = [], synthetic = false, seq = null) {
   thinking = null;
+  if (!synthetic) usage.beginReply();
   const r = row(synthetic ? "event" : "user");
   const bubble = document.createElement("div");
   bubble.className = synthetic ? "note system media-note" : "bubble-user";
@@ -370,6 +375,7 @@ function appendAgentActions(col, raw, seq = null) {
   actions.appendChild(copy);
   if (Number.isInteger(seq)) actions.appendChild(forkButton(seq));
   col.appendChild(actions);
+  usage.setReplyActions(actions);
 }
 
 export function finalizeAgentMessage(finalText) {
@@ -487,6 +493,7 @@ export function addToolCard(id, name, args) {
   card.append(summary, body);
   r.appendChild(card);
   pendingTools.push({ id: id || null, name, status, body });
+  usage.step();
   scrollToBottom();
   return card;
 }
@@ -576,6 +583,7 @@ export function clearThread(preserveView = false) {
   typingEl = null;
   stick = !preserveView;
   jumpBtn.hidden = stick;
+  usage.reset();
 }
 
 attachCopyHandler(threadEl);
@@ -596,22 +604,6 @@ export function appendThinking(delta) {
   }
   thinking.append(document.createTextNode(delta));
   scrollToBottom();
-}
-
-export function renderUsage(msg) {
-  const chip = $("usage-chip");
-  const cost = msg.cost_usd != null ? ` · $${Number(msg.cost_usd).toFixed(4)}` : "";
-  const context =
-    msg.context_pct != null
-      ? ` · ${t("usage.context", { pct: Number(msg.context_pct).toFixed(0) })}`
-      : "";
-  const tokens = t("usage.tokens", {
-    input: Number(msg.input || 0).toLocaleString(),
-    output: Number(msg.output || 0).toLocaleString(),
-  });
-  chip.textContent = `${tokens}${cost}${context}`;
-  chip.title = t("usage.cached", { count: Number(msg.cached || 0).toLocaleString() });
-  chip.hidden = false;
 }
 
 function diffView(diff) {

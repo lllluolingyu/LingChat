@@ -86,9 +86,15 @@ from lingcore.sessions import (
     open_store,
 )
 from lingcore.tools.builtin.shell import allowlist_pattern_for
+from lingcore.usage import TokenUsage
 from pydantic import BaseModel, Field, StrictInt
 
-from lingchat._compat import TodoUpdated, todos_from_payload
+from lingchat._compat import (
+    TodoUpdated,
+    TurnStatsReported,
+    todos_from_payload,
+    turn_stats_from_payload,
+)
 from lingchat._web import install_browser_assets
 
 
@@ -147,6 +153,34 @@ def _validate_attachments(raw: object) -> list[Attachment]:
     return out
 
 
+def _usage_msg(usage: TokenUsage) -> dict[str, Any]:
+    """One model request's provider-reported tokens (reply, summarizer, or
+    vision fallback). Advisory: this UI has no cost accounting. ``scope`` and
+    ``cache_in_input`` match AgentGUI's frame, so both UIs share one ledger
+    (lingchat/shared/usage.js)."""
+    return {
+        "type": "usage",
+        "model": usage.model,
+        "input": usage.input_tokens,
+        "output": usage.output_tokens,
+        "cached": usage.cached_input_tokens,
+        "reasoning": usage.reasoning_tokens,
+        "scope": "request",
+        "cache_in_input": True,
+    }
+
+
+def _timing_msg(stats: Any) -> dict[str, Any]:
+    """When a turn ran and how long LingCore measured it generating."""
+    return {
+        "type": "timing",
+        "started_at": stats.started_at.isoformat(),
+        "ended_at": stats.ended_at.isoformat(),
+        "elapsed_ms": stats.elapsed_ms,
+        "model_ms": stats.model_ms,
+    }
+
+
 def _event_to_msg(event: AgentEvent) -> dict[str, Any]:
     """Map an AgentEvent to a JSON-serializable message for the browser."""
     match event:
@@ -196,16 +230,9 @@ def _event_to_msg(event: AgentEvent) -> dict[str, Any]:
                 "discarded_chars": discarded_chars,
             }
         case UsageReported(usage):
-            # One model request's provider-reported tokens (reply, summarizer,
-            # or vision fallback). Advisory: this UI has no cost accounting.
-            return {
-                "type": "usage",
-                "model": usage.model,
-                "input": usage.input_tokens,
-                "output": usage.output_tokens,
-                "cached": usage.cached_input_tokens,
-                "reasoning": usage.reasoning_tokens,
-            }
+            return _usage_msg(usage)
+        case TurnStatsReported(stats):
+            return _timing_msg(stats)
         case TodoUpdated(todos):
             return {"type": "todos", "todos": [item.model_dump() for item in todos]}
         case TurnCancelled(reason):
@@ -299,6 +326,18 @@ def _stored_event_to_display(event: SessionEvent) -> dict[str, Any] | None:
             **base,
             "type": "todos",
             "todos": [item.model_dump() for item in todos],
+        }
+    if event.kind == "turn_stats":
+        # Anchored to the turn's user message: the usage messages the turn
+        # streamed, and its timing.
+        stats = turn_stats_from_payload(event.payload)
+        if stats is None:
+            return None
+        return {
+            **base,
+            "type": "turn_stats",
+            "usage": [_usage_msg(usage) for usage in stats.usage],
+            "timing": _timing_msg(stats),
         }
     return None
 

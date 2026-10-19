@@ -31,11 +31,23 @@ from lingcore.plugins.commands import CommandCatalog
 from lingcore.sessions import SessionStore, new_session_id, open_store
 from lingcore.tools.builtin.shell import allowlist_pattern_for
 
-from agentgui._compat import TodoUpdated, todos_from_payload
+from agentgui._compat import (
+    TodoUpdated,
+    TurnStatsReported,
+    todos_from_payload,
+    turn_stats_from_payload,
+)
 from agentgui.attachments import attachment_payloads
-from agentgui.protocol import ApprovalRequest, Frame, frame, plugin_notice, tool_kind
+from agentgui.protocol import (
+    STATUS_FRAMES,
+    ApprovalRequest,
+    Frame,
+    frame,
+    plugin_notice,
+    tool_kind,
+)
 from agentgui.store import SessionRecord, Store
-from agentgui.usage import model_usage, usage_frame
+from agentgui.usage import model_usage, timing_frame, usage_frame
 
 from .base import ApproveFn, BackendBase, Capabilities, UserTurn
 
@@ -118,9 +130,18 @@ def event_frame(event: Any) -> Frame:
                 ],
                 scope="request",
                 cumulative=False,
+                cache_in_input=True,
                 input=usage.input_tokens,
                 output=usage.output_tokens,
                 cached=usage.cached_input_tokens,
+            )
+        case TurnStatsReported(stats):
+            # LingCore's own measurement; it supersedes the connection's clock.
+            return timing_frame(
+                started_at=stats.started_at,
+                ended_at=stats.ended_at,
+                elapsed_ms=stats.elapsed_ms,
+                model_ms=stats.model_ms,
             )
         case StreamRetry(attempt, maximum, reason, discarded):
             return frame(
@@ -315,11 +336,7 @@ class LingCoreBackend(BackendBase):
         if not self.native or not self.session.native_id:
             return []
         old_status = {
-            t["seq"]: [
-                f
-                for f in t["frames"]
-                if f["type"] in {"error", "cancelled", "notice", "plugin_notice"}
-            ]
+            t["seq"]: [f for f in t["frames"] if f["type"] in STATUS_FRAMES]
             for t in self.store.turns(self.session.id)
         }
         turns = []
@@ -375,6 +392,17 @@ class LingCoreBackend(BackendBase):
                                 "todos": [item.model_dump() for item in todos],
                             }
                         )
+                    continue
+                if event.kind == "turn_stats":
+                    # Anchored to the turn's user row: the same usage frames
+                    # the turn streamed, then its timing.
+                    stats = turn_stats_from_payload(event.payload)
+                    if stats is not None:
+                        frames.extend(
+                            event_frame(UsageReported(usage)).to_wire()
+                            for usage in stats.usage
+                        )
+                        frames.append(event_frame(TurnStatsReported(stats)).to_wire())
                     continue
                 frames.append(
                     {

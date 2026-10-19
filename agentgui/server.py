@@ -41,8 +41,16 @@ from .backends.codex_backend import CodexBackend
 from .backends.lingcore_backend import LingCoreBackend, ProfileCache
 from .catalog import Catalog
 from .diagnostics import doctor, live_models
-from .protocol import ApprovalRequest, Decision, Frame, decision, frame
+from .protocol import (
+    STATUS_FRAMES,
+    ApprovalRequest,
+    Decision,
+    Frame,
+    decision,
+    frame,
+)
 from .store import Autonomy, SessionRecord, Store
+from .usage import TurnClock
 
 BackendFactory = Callable[[SessionRecord, Store, ProfileCache], AgentBackend]
 _WEB_DIR = Path(__file__).with_name("web")
@@ -101,6 +109,7 @@ class ChatConnection:
         self.transient: list[dict[str, Any]] = []
         self.buffered: dict[str, Any] | None = None
         self.flushed_at = 0.0
+        self.clock: TurnClock | None = None
 
     @property
     def busy(self) -> bool:
@@ -117,15 +126,8 @@ class ChatConnection:
         transcript: bool = False,
     ) -> None:
         wire = value if isinstance(value, dict) else value.to_wire()
-        if transcript and self.seq is not None:
-            self.persist(wire)
-        if transcript and wire["type"] in {
-            "error",
-            "cancelled",
-            "notice",
-            "plugin_notice",
-        }:
-            self.transient.append(wire)
+        if transcript:
+            self.record(wire)
         if self.closed:
             return
         try:
@@ -133,6 +135,19 @@ class ChatConnection:
         except (WebSocketDisconnect, OSError, RuntimeError):
             self.closed = True
             raise WebSocketDisconnect() from None
+
+    def record(self, wire: dict[str, Any]) -> None:
+        """Keep a transcript frame without sending it."""
+        if self.seq is not None:
+            self.persist(wire)
+        if wire["type"] in STATUS_FRAMES:
+            self.transient.append(wire)
+        if self.clock:
+            # A backend that measures its own turns (LingCore) supersedes this.
+            if wire["type"] == "timing":
+                self.clock = None
+            else:
+                self.clock.observe(wire)
 
     def persist(self, wire: dict[str, Any]) -> None:
         if wire["type"] in {"text", "thinking"} and wire.keys() == {"type", "delta"}:
@@ -159,11 +174,17 @@ class ChatConnection:
             return "deny"
         future: asyncio.Future[Decision] = asyncio.get_running_loop().create_future()
         self.pending[request.id] = future
+        # Time spent waiting on the user is not generation time.
+        clock = self.clock
+        if clock:
+            clock.hold()
         try:
             await self.send(request, transcript=True)
             answer = await future
             return answer if answer in request.options else "deny"
         finally:
+            if clock:
+                clock.release()
             self.pending.pop(request.id, None)
 
     def deny_pending(self) -> None:
@@ -197,8 +218,16 @@ class ChatConnection:
 
     async def finish(self) -> None:
         self.deny_pending()
+        # Recorded before reconcile, so a backend that rebuilds its turns from
+        # native history keeps it; sent after, so a dead socket cannot skip that.
+        timing = self.clock.finish() if self.clock else None
+        self.clock = None
+        if timing:
+            self.record(timing)
         self.flush()
         self.backend.reconcile(self.transient)
+        if timing:
+            await self.send(timing)
         await self.send(frame("turn_end"))
         self.seq = None
         self.transient = []
@@ -331,6 +360,7 @@ class ChatConnection:
                 stream = self.backend.run_turn(UserTurn(text, attachments))
             self.terminal = False
             self.transient = []
+            self.clock = TurnClock()
             self.turn_task = asyncio.create_task(
                 self.run(stream, editing=kind == "edit")
             )

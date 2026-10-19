@@ -79,8 +79,26 @@ what the flat counters cover (`request`, `turn`, or `conversation`) and
 Claude and Codex report totals a biller must diff, LingCore reports one
 request. Per-model counts follow each provider's own convention: `cached`/
 `cache_write` are inside `input` for Codex and separate from it for Claude,
-while `reasoning` is inside `output`. `cost_usd` is the agent's own estimate
-and is never authoritative for billing.
+while `reasoning` is inside `output`; the flat counters state theirs in
+`cache_in_input` (Claude's flat `cached`/`cache_write` are prompt tokens beside
+`input`). `cost_usd` is the agent's own estimate and is never authoritative for
+billing.
+
+Each turn also reports one `timing` frame (`started_at`, `ended_at`,
+`elapsed_ms`, `model_ms`), where `model_ms` is wall time with no tool running
+and no approval open. LingCore measures its own turns (`TurnStatsReported`,
+just before the outcome) and keeps them as `turn_stats` session events on the
+turn's user message, so Stop, Edit and Fork handle them like other turn state;
+for Claude and Codex AgentGUI times the turn itself. The browser shows each
+reply's tokens and finish time beside its actions, and a session line under the
+composer with turns, tool steps, throughput (output tokens over `model_ms`),
+total tokens, cache-hit rate, and context use when the backend reports it.
+LingChat shows the same: its `usage` messages carry `scope: "request"` and
+`cache_in_input: true`, live `TurnStatsReported` becomes `timing`, and stored
+stats replay as `turn_stats` entries in `GET /api/sessions/{id}` `events`. Both
+UIs share the accounting and rendering (`lingchat/shared/usage.js`,
+`usage-view.js`). Against a LingCore older than this feature, usage still
+streams live but turns carry no stored stats or timing.
 
 ## Install and run
 

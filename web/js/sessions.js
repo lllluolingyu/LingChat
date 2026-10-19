@@ -11,7 +11,10 @@ import {
   addToolCard,
   addUserMessage,
   clearThread,
+  closeReply,
   compactNote,
+  recordTiming,
+  recordUsage,
   todoCounts,
   resetPendingTools,
   resolveToolCard,
@@ -298,6 +301,12 @@ function renderReplayEvent(event) {
     addNote("compact", compactNote(event));
     return;
   }
+  if (event.type === "turn_stats") {
+    // Anchored to the user message that started the turn it measures.
+    for (const usage of event.usage || []) recordUsage(usage);
+    if (event.timing) recordTiming(event.timing);
+    return;
+  }
   if (event.type === "todos") {
     const { done, total } = todoCounts(event.todos);
     addTodoCard(event.todos, total ? `Todos ${done}/${total}` : "Todo list cleared");
@@ -346,6 +355,7 @@ function renderHistory(messages, events = []) {
     }
     for (const event of byMessage.get(m.seq) || []) renderReplayEvent(event);
   }
+  closeReply();
   resetPendingTools(); // anything unresolved belongs to a crashed turn; don't pair it later
   if (!messages.length) showEmptyState();
   restoreThreadView(view);
