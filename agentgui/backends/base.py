@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import asdict, dataclass, field
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from agentgui.protocol import ApprovalRequest, Decision, Frame
 from agentgui.store import SessionRecord, Store
@@ -28,9 +28,24 @@ class Capabilities:
 class UserTurn:
     text: str
     attachments: list[Any] = field(default_factory=list)
+    background: bool = False
 
 
 ApproveFn = Callable[[ApprovalRequest], Awaitable[Decision]]
+
+
+@runtime_checkable
+class NativeEventBackend(Protocol):
+    """A native agent owns its turns, including turns without a user prompt.
+
+    Exactly one session-long consumer reads events. ``response_start`` and
+    ``response_end`` delimit native responses; notices can arrive while idle.
+    """
+
+    @property
+    def busy(self) -> bool: ...
+    async def submit(self, inp: UserTurn) -> None: ...
+    def events(self) -> AsyncIterator[Frame]: ...
 
 
 @dataclass

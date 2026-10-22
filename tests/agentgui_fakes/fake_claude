@@ -3,27 +3,70 @@
 import json
 import os
 import sys
+import threading
+import time
 import uuid
+from pathlib import Path
 
 if "--version" in sys.argv:
     print("2.1.281 (Claude Code)")
     sys.exit(0)
 
 
+output_lock = threading.Lock()
+monitor_mode = ""
+background = False
+
+
 def emit(message):
-    print(json.dumps(message), flush=True)
+    with output_lock:
+        print(json.dumps(message), flush=True)
 
 
-def result(interrupted=False):
+def result(interrupted=False, text="hello", origin=None):
     emit({"type": "result", "subtype": "success", "duration_ms": 1, "duration_api_ms": 1,
           "is_error": False, "num_turns": 1, "session_id": session,
-          "result": "" if interrupted else "hello", "total_cost_usd": 0.001,
+          "result": "" if interrupted else text, "origin": origin, "total_cost_usd": 0.001,
           "usage": {"input_tokens": 12, "output_tokens": 3, "cache_read_input_tokens": 4},
           # Cumulative across the connection, and unlike `usage` it counts subagents.
           "modelUsage": {"claude-sonnet-4-9": {"inputTokens": 30, "outputTokens": 8,
                                                "cacheReadInputTokens": 4,
                                                "cacheCreationInputTokens": 6,
                                                "costUSD": 0.001}}})
+
+
+def monitor_reply():
+    emit({"type": "stream_event", "uuid": "automatic", "session_id": session, "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Automatic monitor reply"}}})
+    emit({"type": "assistant", "message": {"model": "fake", "content": [{"type": "text", "text": "Automatic monitor reply"}]}})
+    result(text="Automatic monitor reply", origin={"kind": "task-notification"})
+
+
+def watch():
+    global background
+    gate = Path(os.environ["FAKE_CLAUDE_GATE"])
+    while not gate.exists():
+        time.sleep(.01)
+    emit({"type": "system", "subtype": "task_progress", "task_id": "watch-1", "description": "Build changed", "usage": {"total_tokens": 0, "tool_uses": 0, "duration_ms": 1}, "uuid": "progress", "session_id": session})
+    emit({"type": "system", "subtype": "task_updated", "task_id": "watch-1", "patch": {"status": "completed"}, "uuid": "updated", "session_id": session})
+    if monitor_mode == "monitor-update-only":
+        return
+    emit({"type": "system", "subtype": "task_notification", "task_id": "watch-1", "status": "completed", "summary": "Build passed", "output_file": "/tmp/watch.log", "uuid": "notification", "session_id": session})
+    if monitor_mode == "monitor-notice":
+        return
+    background = True
+    emit({"type": "user", "origin": {"kind": "task-notification"}, "message": {"role": "user", "content": "Monitor output: build passed"}})
+    emit({"type": "stream_event", "uuid": "automatic-thinking", "session_id": session, "event": {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "Checking monitor event"}}})
+    if monitor_mode == "monitor-exit":
+        os._exit(7)
+    if monitor_mode == "monitor-slow":
+        return
+    if monitor_mode == "monitor-approval":
+        inputs = {"command": "echo automatic-action"}
+        emit({"type": "assistant", "message": {"model": "fake", "content": [{"type": "tool_use", "id": "auto-call", "name": "Bash", "input": inputs}]}})
+        emit({"type": "control_request", "request_id": "auto-permission", "request": {"subtype": "can_use_tool", "tool_name": "Bash", "tool_use_id": "auto-call", "input": inputs}})
+        return
+    monitor_reply()
+    background = False
 
 
 def finish(allowed):
@@ -52,10 +95,26 @@ for line in sys.stdin:
     if kind == "control_request":
         emit({"type": "control_response", "response": {"subtype": "success", "request_id": message["request_id"], "response": {}}})
         if message["request"]["subtype"] == "interrupt":
-            result(True)
+            result(True, origin={"kind": "task-notification"} if background else None)
+            background = False
     elif kind == "user":
         emit({"type": "system", "subtype": "init", "session_id": session})
         text = str(message["message"]["content"])
+        if "injection race" in text:
+            emit({"type": "user", "origin": {"kind": "task-notification"}, "message": {"role": "user", "content": [{"type": "text", "text": "An event arrived before the human response"}]}})
+            monitor_reply()
+            while not Path(os.environ["FAKE_CLAUDE_GATE"]).exists():
+                time.sleep(.01)
+        if "--replay-user-messages" in sys.argv:
+            emit(message)
+        if "monitor-" in text:
+            monitor_mode = next(b["text"] for b in message["message"]["content"] if b["type"] == "text")
+            emit({"type": "assistant", "message": {"model": "fake", "content": [{"type": "tool_use", "id": "watch-call", "name": "Monitor", "input": {"command": "watch-build"}}]}})
+            emit({"type": "system", "subtype": "task_started", "task_id": "watch-1", "task_type": "local_monitor", "description": "Watch build", "uuid": "started", "session_id": session})
+            emit({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "watch-call", "content": "watching"}]}})
+            result(text="Watching", origin={"kind": "human"})
+            threading.Thread(target=watch, daemon=True).start()
+            continue
         emit({"type": "stream_event", "uuid": "thinking", "session_id": session, "event": {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "checking"}}})
         if "slow" in text:
             continue
@@ -69,3 +128,9 @@ for line in sys.stdin:
         emit({"type": "control_request", "request_id": "permission", "request": {"subtype": "can_use_tool", "tool_name": "Edit", "tool_use_id": "call-1", "input": inputs}})
     elif kind == "control_response" and message["response"]["request_id"] == "permission":
         finish(message["response"].get("response", {}).get("behavior") == "allow")
+
+    elif kind == "control_response" and message["response"]["request_id"] == "auto-permission":
+        allowed = message["response"].get("response", {}).get("behavior") == "allow"
+        emit({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "auto-call", "content": "ok" if allowed else "denied", "is_error": not allowed}]}})
+        monitor_reply()
+        background = False

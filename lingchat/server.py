@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import copy
+import logging
 import secrets
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
@@ -51,6 +52,7 @@ from fastapi import Path as PathParam
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from lingcore.agent import Agent
+from lingcore.background import BackgroundInput
 from lingcore.config import AgentProfile
 from lingcore.errors import (
     INCOMPLETE_FINISH_REASONS,
@@ -97,6 +99,7 @@ from lingcore.usage import TokenUsage, turn_stats_from_payload
 from pydantic import BaseModel, Field, StrictInt
 
 from lingchat._web import install_browser_assets
+from lingchat.live import LiveChannel, pump_background
 
 
 def _find_web_dir() -> Path:
@@ -385,6 +388,8 @@ class _ForkBody(BaseModel):
 class _PendingConfirm:
     future: asyncio.Future[bool]
     command: str
+    message: dict[str, Any]
+    sent: bool = False
 
 
 def shell_runner_label(tool_options: Mapping[str, Any]) -> str:
@@ -417,7 +422,7 @@ def _content_disposition(name: str | None) -> str:
 
 
 class WebSession:
-    """One browser connection: owns an Agent and bridges it to the socket."""
+    """One server-owned Agent with a replaceable browser connection."""
 
     def __init__(
         self,
@@ -428,12 +433,12 @@ class WebSession:
         store: SessionStore | None = None,
         session_id: str | None = None,
     ) -> None:
-        self.ws = ws
+        self.channel = LiveChannel(ws)
+        self._closed = False
         self.profile = profile
         self._base_dir = base_dir
         self._llm_factory = llm_factory
-        # Per-connection mutable options: nested run_shell allowlists must never
-        # leak through the shared profile into another browser connection.
+        # Per-session mutable options never leak into another conversation.
         # Copy only here, before Agent.from_profile injects live non-copyable
         # skill state and memory summarizers into this dict.
         self._tool_options = copy.deepcopy(profile.tool_options)
@@ -454,12 +459,16 @@ class WebSession:
         self._tasks: set[asyncio.Task[None]] = set()
         self._turn_task: asyncio.Task[None] | None = None
         self._turn_terminal = False
+        self._stopping = False
+        self._idle = asyncio.Event()
+        self._idle.set()
+        self._background_task: asyncio.Task[None] | None = None
 
     def _build_agent(self, *, llm: Any = None) -> Agent:
         client = llm
         if client is None and self._llm_factory is not None:
             client = self._llm_factory()
-        return Agent.from_profile(
+        agent = Agent.from_profile(
             self.profile,
             confirm=self.confirm,
             base_dir=self._base_dir,
@@ -468,6 +477,11 @@ class WebSession:
             session_store=self._store,
             session_id=self._session_id,
         )
+        agent.background.enabled = True
+        return agent
+
+    async def _background_turn(self, incoming: BackgroundInput) -> None:
+        self.spawn_turn(incoming)
 
     async def confirm(self, command: str) -> bool:
         """Ask the browser to approve a command; await its click.
@@ -475,10 +489,11 @@ class WebSession:
         Each call gets a unique id echoed back in the ``confirm_response`` so
         concurrent confirmations don't clobber one another's future.
         """
+        if self._closed:
+            return False
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[bool] = loop.create_future()
         cid = uuid.uuid4().hex
-        self._pending_confirms[cid] = _PendingConfirm(future=fut, command=command)
         pattern = self._allowlist_pattern(command)
         # Only this turn's run_shell commands are shell prompts; anything else
         # (a non-public fetch, a skill activation) is a plain approval.
@@ -494,8 +509,12 @@ class WebSession:
             message["runner"] = shell_runner_label(self._tool_options)
         if pattern is not None:
             message["allowlist_pattern"] = pattern
-        await self.ws.send_json(message)
+        pending = _PendingConfirm(fut, command, message)
+        self._pending_confirms[cid] = pending
         try:
+            await self.channel.send(
+                message, record=lambda _: setattr(pending, "sent", True)
+            )
             return await fut
         finally:
             self._pending_confirms.pop(cid, None)
@@ -545,6 +564,8 @@ class WebSession:
         pending.future.set_result(approved)
 
     def _resolve_input(self, incoming: UserInput) -> UserInput:
+        if isinstance(incoming, BackgroundInput):
+            return incoming
         catalog = getattr(self.agent, "commands", CommandCatalog())
         expanded = catalog.resolve(incoming.text, reserved=())
         if expanded is None:
@@ -554,8 +575,27 @@ class WebSession:
 
     def spawn_turn(self, incoming: UserInput) -> bool:
         """Launch one turn, refusing to queue behind an active turn."""
-        if self._turn_task is not None and not self._turn_task.done():
+        if self._closed or (self._turn_task is not None and not self._turn_task.done()):
             return False
+        history = self.history()
+        seq = (
+            self._store.next_sequence(self._session_id)
+            if self._store is not None and self._session_id is not None
+            else len(history["messages"])
+        )
+        history["messages"].append(
+            {
+                "role": "user",
+                "seq": seq,
+                "text": incoming.display_text or incoming.text,
+                "name": "monitor" if isinstance(incoming, BackgroundInput) else None,
+                "attachments": _attachment_payloads(
+                    incoming.attachments, downloadable=self._store is not None
+                ),
+            }
+        )
+        self.channel.begin(history)
+        self._idle.clear()
         task = asyncio.create_task(self._run_turn(self._resolve_input(incoming)))
         self._turn_task = task
         self._turn_terminal = False
@@ -568,6 +608,8 @@ class WebSession:
         if self._turn_task is task:
             self._turn_task = None
             self._turn_terminal = False
+            if not self._stopping:
+                self._idle.set()
 
     async def stop_turn(self) -> bool:
         """Stop the active turn, repair its history, and notify the browser."""
@@ -575,68 +617,86 @@ class WebSession:
         if task is None or task.done() or self._turn_terminal:
             await self._safe_send({"type": "stop_ignored"})
             return False
-        agent_turn_started = self.agent.cancel_turn()
-        if not agent_turn_started:
-            task.cancel()  # the task may not have entered Agent.run yet
-        await asyncio.gather(task, return_exceptions=True)
-        if not task.cancelled():
-            return False
-        # cancel_turn() succeeds only after Agent acquired its checkpoint. An
-        # immediate Stop can cancel this wrapper before that point; there is no
-        # Agent state to finalize, but it is still a successful UI cancellation.
-        notices: list[PluginNotice] = getattr(
-            self.agent, "drain_plugin_notices", lambda: []
-        )()
-        event: AgentEvent = (
-            self.agent.finalize_cancelled_turn()
-            if agent_turn_started
-            else TurnCancelled()
-        )
-        for pending in [*getattr(self.agent, "drain_usage", lambda: [])(), *notices]:
-            await self._safe_send(_event_to_msg(pending))
-        await self._safe_send(_event_to_msg(event))
-        await self._safe_send({"type": "turn_end"})
-        return True
+        self._stopping = True
+        self._idle.clear()
+        try:
+            agent_turn_started = self.agent.cancel_turn()
+            if not agent_turn_started:
+                task.cancel()  # the task may not have entered Agent.run yet
+            await asyncio.gather(task, return_exceptions=True)
+            if not task.cancelled():
+                return False
+            notices: list[PluginNotice] = getattr(
+                self.agent, "drain_plugin_notices", lambda: []
+            )()
+            event: AgentEvent = (
+                self.agent.finalize_cancelled_turn()
+                if agent_turn_started
+                else TurnCancelled()
+            )
+            for pending in [
+                *getattr(self.agent, "drain_usage", lambda: [])(),
+                *notices,
+            ]:
+                await self._safe_send(_event_to_msg(pending), replay=True)
+            await self._safe_send(_event_to_msg(event), replay=True)
+            await self._safe_send({"type": "turn_end"}, end_turn=True)
+            return True
+        finally:
+            self._stopping = False
+            self._idle.set()
 
     async def aclose(self) -> None:
-        """Tear down on disconnect: cancel in-flight turns and await them.
-
-        A long-running tool (e.g. run_shell) is cancelled so it stops touching
-        the shared session before the lease is released — otherwise a second tab
-        could attach and a second agent interleave writes on the same transcript.
-        """
+        """Stop and await work on server shutdown or explicit session deletion."""
+        if self._closed:
+            return
+        self._closed = True
+        if self._background_task is not None:
+            self._background_task.cancel()
+            await asyncio.gather(self._background_task, return_exceptions=True)
+        for pending in self._pending_confirms.values():
+            if not pending.future.done():
+                pending.future.set_result(False)
         tasks = list(self._tasks)
         agent_turn_started = self.agent.cancel_turn()
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        notices: list[PluginNotice] = getattr(
-            self.agent, "drain_plugin_notices", lambda: []
-        )()
-        if agent_turn_started and any(task.cancelled() for task in tasks):
-            terminal = self.agent.finalize_cancelled_turn()
-            for pending in [
-                *getattr(self.agent, "drain_usage", lambda: [])(),
-                *notices,
-                terminal,
-            ]:
-                await self._safe_send(_event_to_msg(pending))
-        close = getattr(self.agent, "aclose", None)
-        if close is not None:
-            await close()
+        try:
+            notices: list[PluginNotice] = getattr(
+                self.agent, "drain_plugin_notices", lambda: []
+            )()
+            if agent_turn_started and any(task.cancelled() for task in tasks):
+                terminal = self.agent.finalize_cancelled_turn()
+                for pending in [
+                    *getattr(self.agent, "drain_usage", lambda: [])(),
+                    *notices,
+                    terminal,
+                ]:
+                    await self._safe_send(_event_to_msg(pending))
+        finally:
+            close = getattr(self.agent, "aclose", None)
+            if close is not None:
+                await close()
 
     async def _run_turn(self, incoming: UserInput) -> None:
         # Serialize turns so one connection's runs share memory safely.
         async with self._run_lock:
+            if isinstance(incoming, BackgroundInput):
+                await self._safe_send(
+                    {
+                        "type": "monitor",
+                        "text": incoming.text,
+                        "history": self.channel.history,
+                    }
+                )
             self._turn_shell_commands.clear()
             self._turn_process_commands.clear()
             turn = self.agent.run(incoming)
             try:
-                # A failure in the loop body does not make ``async for`` close
-                # its generator immediately. Own it explicitly so a failed
-                # outbound send rolls back the abandoned Agent turn before this
-                # task exits, rather than leaving cleanup to asyncgen GC.
+                # Own the stream so internal failures close it immediately.
+                # Viewer transport failures are isolated by LiveChannel.
                 async with aclosing(turn):
                     async for event in turn:
                         if isinstance(event, ToolCallStarted):
@@ -644,24 +704,23 @@ class WebSession:
                             if isinstance(command, str):
                                 if event.call.name == "run_shell":
                                     self._turn_shell_commands.add(command)
-                                elif event.call.name == "process_start":
+                                elif event.call.name in {
+                                    "process_start",
+                                    "process_monitor",
+                                }:
                                     self._turn_process_commands.add(command)
                         if isinstance(event, (Final, Error)):
                             self._turn_terminal = True
-                        await self.ws.send_json(_event_to_msg(event))
-            except WebSocketDisconnect:
-                # The owned stream has already repaired any non-terminal turn.
-                # The reader loop will observe the same closed socket; do not
-                # leave an unobserved exception on this background task.
-                return
+                        await self._safe_send(_event_to_msg(event), replay=True)
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # never let one turn kill the connection
                 self._turn_terminal = True
                 await self._safe_send(
-                    {"type": "error", "message": f"internal error: {e!r}"}
+                    {"type": "error", "message": f"internal error: {e!r}"},
+                    replay=True,
                 )
-            await self._safe_send({"type": "turn_end"})
+            await self._safe_send({"type": "turn_end"}, end_turn=True)
 
     async def _edit_turn(self, seq: object, text: str) -> None:
         """Rewind to a stored user message and regenerate from edited text."""
@@ -714,6 +773,7 @@ class WebSession:
         # client and per-session tool options. LingCore restores any surviving
         # compaction snapshot and dynamic-skill state during this rebuild.
         previous = self.agent
+        self._idle.clear()
         self.agent = self._build_agent(llm=previous.llm)
         close = getattr(previous, "aclose", None)
         if close is not None:
@@ -725,47 +785,82 @@ class WebSession:
                 {"type": "edit_rejected", "message": "another turn started first"}
             )
 
-    async def _safe_send(self, msg: dict[str, Any]) -> None:
-        """Send, tolerating a socket that closed underneath us."""
-        try:
-            await self.ws.send_json(msg)
-        except Exception:
-            pass
+    async def _safe_send(
+        self, msg: dict[str, Any], *, replay: bool = False, end_turn: bool = False
+    ) -> None:
+        await self.channel.send(msg, replay=replay, end_turn=end_turn)
 
-    async def serve(self) -> None:
-        """Reader loop: dispatch inbound messages until the socket closes."""
+    @property
+    def busy(self) -> bool:
+        return self._turn_task is not None and not self._turn_task.done()
+
+    def history(self) -> dict[str, Any]:
+        if self._store is not None and self._session_id is not None:
+            return {
+                "messages": [
+                    _stored_to_display(record.seq, record.message)
+                    for record in self._store.message_records(self._session_id)
+                ],
+                "events": _replay_events(self._store, self._session_id),
+            }
+        return {
+            "messages": [
+                _stored_to_display(seq, message)
+                for seq, message in enumerate(self.agent.memory.messages)
+            ],
+            "events": [],
+        }
+
+    def hello(self) -> dict[str, Any]:
         title = ""
         if self._store is not None and self._session_id is not None:
             meta = self._store.get(self._session_id)
             title = meta.title if meta is not None else ""
-        await self.ws.send_json(
-            {
-                "type": "hello",
-                "commands": getattr(
-                    self.agent, "commands", CommandCatalog()
-                ).metadata(),
-                "agent": self.profile.name,
-                "model": self.profile.llm.model,
-                "workspace": str(self.agent.tool_ctx.workspace),
-                "session": self._session_id,
-                "title": title,
-                "limits": {
-                    "max_attachments": MAX_ATTACHMENTS,
-                    "image_max_bytes": IMAGE_MAX_BYTES,
-                    "file_max_bytes": FILE_MAX_BYTES,
-                    "total_max_bytes": TOTAL_ATTACHMENT_MAX_BYTES,
-                },
-                "event_cursor": (
-                    self._store.event_cursor(self._session_id)
-                    if self._store is not None and self._session_id is not None
-                    else -1
-                ),
-            }
+        return {
+            "type": "hello",
+            "commands": getattr(self.agent, "commands", CommandCatalog()).metadata(),
+            "agent": self.profile.name,
+            "model": self.profile.llm.model,
+            "workspace": str(self.agent.tool_ctx.workspace),
+            "session": self._session_id,
+            "title": title,
+            "limits": {
+                "max_attachments": MAX_ATTACHMENTS,
+                "image_max_bytes": IMAGE_MAX_BYTES,
+                "file_max_bytes": FILE_MAX_BYTES,
+                "total_max_bytes": TOTAL_ATTACHMENT_MAX_BYTES,
+            },
+            "event_cursor": (
+                self._store.event_cursor(self._session_id)
+                if self._store is not None and self._session_id is not None
+                else -1
+            ),
+        }
+
+    async def serve(self, ws: WebSocket) -> None:
+        """Read this viewer's messages; disconnecting leaves the Agent alive."""
+        if self._background_task is None:
+            self._background_task = asyncio.create_task(
+                pump_background(
+                    lambda: self.agent.background, self._idle, self._background_turn
+                )
+            )
+        await self.channel.attach(
+            ws,
+            self.hello,
+            self.history,
+            lambda: [
+                p.message
+                for p in self._pending_confirms.values()
+                if p.sent and not p.future.done()
+            ],
         )
-        while True:
-            msg = await self.ws.receive_json()
+        while not self._closed and self.channel.viewer is ws:
+            msg = await ws.receive_json()
+            if self.channel.viewer is not ws:
+                break
             if not isinstance(msg, dict):
-                await self.ws.send_json(
+                await self._safe_send(
                     {"type": "error", "message": "invalid protocol message"}
                 )
                 continue
@@ -784,16 +879,16 @@ class WebSession:
                         else None
                     )
                 except ValueError as e:
-                    await self.ws.send_json(
+                    await self._safe_send(
                         {"type": "error", "message": f"attachment error: {e}"}
                     )
-                    await self.ws.send_json({"type": "turn_end"})
+                    await self._safe_send({"type": "turn_end"})
                     continue
                 if incoming is not None:
                     # Launch as a tracked task so confirm replies can still be
-                    # read concurrently and a disconnect can cancel it cleanly.
+                    # read concurrently while the server owns the running work.
                     if not self.spawn_turn(incoming):
-                        await self.ws.send_json({"type": "turn_busy"})
+                        await self._safe_send({"type": "turn_busy"})
             elif kind == "stop":
                 await self.stop_turn()
             elif kind == "edit":
@@ -823,10 +918,10 @@ def create_app(
 ) -> FastAPI:
     """Build the FastAPI app for a given profile.
 
-    The profile and its session store are loaded once; each WebSocket
-    connection builds its own Agent (isolated tool options) on top of a stored
-    session — resumed when the client names one, fresh otherwise.
-    ``llm_factory`` overrides the LLM client per connection (tests inject a
+    The profile and its session store are loaded once. Server-owned Agents
+    keep isolated tool options and continue working between viewer connections.
+    A reconnect reuses the live Agent; after a restart it loads stored history.
+    ``llm_factory`` overrides the LLM client per runtime (tests inject a
     scripted fake; default builds a real client from the profile).
 
     Authentication boundary (the agent can run shell — treat the port as
@@ -876,15 +971,27 @@ def create_app(
     store, notice = open_store(profile)
     if notice:
         print(f"lingchat: {notice}")
-    # Sessions attached to a live socket in this process; a second tab asking
-    # for one of these is refused so two agents never interleave one transcript.
-    attached: set[str] = set()
+    # Runtimes outlive their viewers. None reserves a session during deletion.
+    attached: dict[str, WebSession | None] = {}
+    shutting_down = False
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        nonlocal shutting_down
         try:
             yield
         finally:
+            shutting_down = True
+            results = await asyncio.gather(
+                *(session.aclose() for session in list(attached.values()) if session),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, BaseException):
+                    logging.getLogger(__name__).error(
+                        "Session shutdown failed (%s)", type(result).__name__
+                    )
+            attached.clear()
             if store is not None:
                 store.close()
 
@@ -892,6 +999,7 @@ def create_app(
     install_browser_assets(app)
     app.state.auth_token = token
     app.state.profile = profile
+    app.state.sessions = attached
 
     async def _require_token(
         x_lingchat_token: str | None = Header(default=None),
@@ -916,36 +1024,36 @@ def create_app(
             await ws.close(code=4401)
             return
         await ws.accept()
-        sid: str | None = None
-        if store is not None:
-            # Adopt a well-formed client id (rows are lazy — an id that never
-            # spoke has no row, and that's fine); replace a malformed one.
-            sid = session if (session and is_session_id(session)) else new_session_id()
-            if sid in attached:
-                await ws.send_json({"type": "session_busy", "session": sid})
-                await ws.close(code=4409)
-                return
-            attached.add(sid)
-        web_session: WebSession | None = None
+        if shutting_down:
+            await ws.close(code=1012)
+            return
+        # Even a history-disabled profile can reattach while this server lives.
+        sid = session if (session and is_session_id(session)) else new_session_id()
+        web_session = attached.get(sid)
+        if sid in attached and (
+            web_session is None or web_session.channel.viewer is not None
+        ):
+            await ws.send_json({"type": "session_busy", "session": sid})
+            await ws.close(code=4409)
+            return
         try:
-            web_session = WebSession(
-                ws,
-                profile,
-                base_dir,
-                llm_factory=llm_factory,
-                store=store,
-                session_id=sid,
-            )
-            await web_session.serve()
+            if web_session is None:
+                web_session = WebSession(
+                    ws,
+                    profile,
+                    base_dir,
+                    llm_factory=llm_factory,
+                    store=store,
+                    session_id=sid,
+                )
+                attached[sid] = web_session
+            web_session.channel.viewer = ws
+            await web_session.serve(ws)
         except WebSocketDisconnect:
             pass
         finally:
-            # Cancel and await in-flight turns BEFORE releasing the lease, so no
-            # detached agent keeps writing to a session a new tab could adopt.
             if web_session is not None:
-                await web_session.aclose()
-            if sid is not None:
-                attached.discard(sid)
+                web_session.channel.detach(ws)
 
     @app.get("/api/sessions")
     async def list_sessions(_: None = Depends(_require_token)) -> dict[str, Any]:
@@ -1039,6 +1147,11 @@ def create_app(
     ) -> dict[str, Any]:
         if store is None or store.get(session_id) is None:
             raise HTTPException(status_code=404, detail="unknown session")
+        live = attached.get(session_id)
+        if session_id in attached and (live is None or live.busy):
+            raise HTTPException(
+                status_code=409, detail="wait for or stop the active turn"
+            )
         title: str | None = None
         if body.title is not None:
             title = body.title.strip()
@@ -1064,12 +1177,21 @@ def create_app(
     ) -> dict[str, Any]:
         if store is None:
             raise HTTPException(status_code=404, detail="unknown session")
-        if session_id in attached:
+        live = attached.get(session_id)
+        if session_id in attached and (
+            live is None or live.channel.viewer is not None or live.busy
+        ):
             # A live SessionMemory would lazily re-create the row on its next
             # append — deleting under it would just resurrect a husk.
             raise HTTPException(
-                status_code=409, detail="session is open in a connected tab"
+                status_code=409, detail="session is connected or still running"
             )
+        if live:
+            attached[session_id] = None
+            try:
+                await live.aclose()
+            finally:
+                attached.pop(session_id, None)
         if not store.delete(session_id):
             raise HTTPException(status_code=404, detail="unknown session")
         return {"ok": True}

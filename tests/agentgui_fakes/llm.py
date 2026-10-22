@@ -16,7 +16,8 @@ class FakeLLM:
         turn = self.turns.pop(0) if self.turns else {}
         if turn.get("wait"):
             yield LLMChunk(text_delta="working")
-            await asyncio.Event().wait()
+            gate = turn["wait"]
+            await (gate if isinstance(gate, asyncio.Event) else asyncio.Event()).wait()
         text = turn.get("text", "")
         for i in range(0, len(text), 4):
             yield LLMChunk(text_delta=text[i : i + 4])

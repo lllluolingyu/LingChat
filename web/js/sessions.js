@@ -322,6 +322,11 @@ function renderReplayEvent(event) {
   }
 }
 
+export function renderSnapshot(data) {
+  threadGen++; // invalidate any older HTTP replay before attaching the live stream
+  renderHistory(data.messages || [], data.events || []);
+}
+
 function renderHistory(messages, events = []) {
   // Stored-message shapes (see server._stored_to_display), not the
   // streaming event shapes main.js deals in. Durable runtime events are
@@ -341,7 +346,8 @@ function renderHistory(messages, events = []) {
   }
   for (const m of messages) {
     if (m.role === "user") {
-      addUserMessage(m.text, m.attachments || [], m.name === "media", m.seq);
+      if (m.name === "monitor") addNote("monitor", m.text);
+      else addUserMessage(m.text, m.attachments || [], m.name === "media", m.seq);
     } else if (m.role === "assistant") {
       if (m.text) {
         const forkSeq = (m.tool_calls || []).length ? null : m.seq;

@@ -9,7 +9,7 @@ entirely outside the `lingcore` package (LingCore invariant 3).
 
 ```
 LingChat/
-  lingchat/server.py    # FastAPI app + WebSocket bridge + per-connection Agent
+  lingchat/server.py    # FastAPI app + WebSocket bridge + server-owned sessions
   lingchat/__main__.py  # `python -m lingchat` / `lingchat` entry point
   web/                  # vanilla HTML/CSS/JS single page (no build step)
   web/fonts/            # self-hosted variable fonts (SIL OFL 1.1, Latin subsets)
@@ -189,9 +189,43 @@ Fork is conversation-only: both branches use the same profile workspace and
 see the same files/tool side effects. Stored attachment payloads are copied into
 the fork's SQLite rows; workspace files are not snapshotted.
 
-This replay is completed-state replay, not detached execution: disconnecting
-still cancels and repairs an in-flight model/tool turn. Keeping a task alive
-without a browser is a separate durable-runner lifecycle.
+Both LingChat and AgentGUI keep sessions alive in the server when a tab closes,
+reloads, disconnects, or switches to another conversation. Model turns and
+background commands keep progressing. Reconnecting attaches to the same runtime
+and restores history, partial output, running tool cards, and pending approvals
+in one snapshot before streaming new events. One tab may view a session at a time.
+An action requiring approval waits until you reconnect; disconnecting neither
+approves nor denies it. **Stop** still cancels the selected active turn.
+
+LingCore profiles that enable `process_monitor` can watch command output and
+react without another user message. Output lines queue while a turn is active
+and start a monitor turn when the Agent is idle, including with no tab open.
+Monitor events are displayed separately from user messages and retain the
+same tool approvals. Use `process_stop` to cancel a watch. Watches have a
+5-minute default deadline (at most 30 minutes, subject to profile limits),
+bounded event queues, and are closed with the Agent.
+
+AgentGUI also receives Claude Code's native Monitor events continuously through
+the SDK, including between user turns and while the tab is closed. Task lifecycle
+notifications are saved as notes; automatic responses have their own assistant
+rows, with injected input labelled separately from human messages. They retain
+normal tool approvals, Stop, usage accounting, and reconnect replay. The adapter
+does not submit monitor notifications back to Claude: Claude owns those turns.
+Closing the server terminates the native CLI and its process group.
+If the CLI exits unexpectedly or fails to interrupt, reconnecting rebuilds it
+from the saved Claude session.
+
+On backend shutdown, all session runtimes receive cancellation/interrupt requests
+and are awaited before stores close. Their plugin resources and background
+process trees are closed and reaped, including processes from completed turns.
+An idle, detached session can be deleted, which also closes its runtime; a
+running session must be stopped before deletion. Editing a message still
+rebuilds its Agent and closes that Agent's background processes.
+
+Runtime ownership is in memory and lasts for this server process. Restarting the
+server restores saved conversation history, but does not resume interrupted
+execution or old process ids. Profiles with history disabled receive an ephemeral
+session id for reconnecting while the server lives, without writing a session DB.
 
 LingCore checkout profiles live at its repository root (`profiles/`). Its wheel
 can copy immutable templates into writable user state with
@@ -227,8 +261,9 @@ and in the shell result header. A profile without a sandbox block uses the
 it is not a substitute for the network boundary or for user confirmation.
 
 An eligible simple shell command can be allowed for the rest of the current
-browser connection. These token-prefix allowlists are connection-local, are
-never persisted, and do not cross tabs or reconnects. Commands containing shell
+server session. These token-prefix allowlists survive reconnecting to that
+session, are never shared with another conversation, and are not persisted
+across backend restarts. Commands containing shell
 control syntax cannot be added to the allowlist.
 
 Every protected `/api` request and WebSocket handshake is authenticated with

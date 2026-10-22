@@ -1,11 +1,12 @@
 # Authentication, attachment and connection lifecycle adapted from LingChat.
 # Copyright LingChat contributors; Apache-2.0. See LICENSE and NOTICE.
-"""One socket reader, one active turn, one approval registry per connection."""
+"""Server-owned sessions with one replaceable socket reader per session."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import secrets
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
@@ -25,6 +26,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+from lingcore.background import BackgroundInput
 from lingcore.media_types import (
     FILE_MAX_BYTES,
     IMAGE_MAX_BYTES,
@@ -34,9 +36,10 @@ from lingcore.media_types import (
 from pydantic import BaseModel, Field, StrictInt
 
 from lingchat._web import install_browser_assets
+from lingchat.live import LiveChannel, pump_background
 
 from .attachments import content_disposition, display_turns, validate_attachments
-from .backends.base import AgentBackend, UserTurn
+from .backends.base import AgentBackend, NativeEventBackend, UserTurn
 from .backends.codex_backend import CodexBackend
 from .backends.lingcore_backend import LingCoreBackend, ProfileCache
 from .catalog import Catalog
@@ -97,10 +100,12 @@ class ChatConnection:
     def __init__(
         self, ws: WebSocket, rec: SessionRecord, store: Store, backend: AgentBackend
     ) -> None:
-        self.ws, self.session, self.store, self.backend = ws, rec, store, backend
+        self.session, self.store, self.backend = rec, store, backend
+        self.channel = LiveChannel(ws)
         self.seq: int | None = None
         self.turn_task: asyncio.Task[None] | None = None
         self.pending: dict[str, asyncio.Future[Decision]] = {}
+        self.requests: dict[str, ApprovalRequest] = {}
         self.closed = False
         self.stopping = False
         self.forking = False
@@ -110,12 +115,29 @@ class ChatConnection:
         self.buffered: dict[str, Any] | None = None
         self.flushed_at = 0.0
         self.clock: TurnClock | None = None
+        self.idle = asyncio.Event()
+        self.idle.set()
+        self.background_task: asyncio.Task[None] | None = None
+        self.native = backend if isinstance(backend, NativeEventBackend) else None
+        self.native_task: asyncio.Task[None] | None = None
+        self.native_responding = False
+        self.native_waiting = False
+
+    def mark_idle(self, _task: object = None) -> None:
+        if not self.busy:
+            self.idle.set()
+
+    async def background_turn(self, incoming: BackgroundInput) -> None:
+        await self.input({"type": "user", "text": incoming.text}, background=True)
 
     @property
     def busy(self) -> bool:
         return (
             self.forking
             or self.stopping
+            or self.native_responding
+            or self.native_waiting
+            or bool(self.native and self.native.busy)
             or bool(self.turn_task and not self.turn_task.done())
         )
 
@@ -126,15 +148,12 @@ class ChatConnection:
         transcript: bool = False,
     ) -> None:
         wire = value if isinstance(value, dict) else value.to_wire()
-        if transcript:
-            self.record(wire)
-        if self.closed:
-            return
-        try:
-            await self.ws.send_json(wire)
-        except (WebSocketDisconnect, OSError, RuntimeError):
-            self.closed = True
-            raise WebSocketDisconnect() from None
+        await self.channel.send(
+            wire,
+            record=self.record if transcript else None,
+            replay=transcript and wire["type"] != "approval",
+            end_turn=wire["type"] == "turn_end",
+        )
 
     def record(self, wire: dict[str, Any]) -> None:
         """Keep a transcript frame without sending it."""
@@ -178,14 +197,20 @@ class ChatConnection:
         clock = self.clock
         if clock:
             clock.hold()
+
+        def register(wire: dict[str, Any]) -> None:
+            self.requests[request.id] = request
+            self.record(wire)
+
         try:
-            await self.send(request, transcript=True)
+            await self.channel.send(request.to_wire(), record=register)
             answer = await future
             return answer if answer in request.options else "deny"
         finally:
             if clock:
                 clock.release()
             self.pending.pop(request.id, None)
+            self.requests.pop(request.id, None)
 
     def deny_pending(self) -> None:
         for future in self.pending.values():
@@ -195,26 +220,106 @@ class ChatConnection:
     async def start(self) -> None:
         await self.backend.start(self.session, self.approve)
         self.started = True
-        await self.send(
-            frame(
-                "hello",
-                session=self.session.id,
-                backend=self.session.backend,
-                model=self.session.model_label,
-                native_model=self.session.native_model,
-                workspace=self.session.workspace,
-                autonomy=self.session.autonomy,
-                title=self.session.title,
-                capabilities=self.backend.capabilities.to_wire(),
-                commands=getattr(self.backend, "commands_metadata", lambda: [])(),
-                limits={
-                    "max_attachments": MAX_ATTACHMENTS,
-                    "image_max_bytes": IMAGE_MAX_BYTES,
-                    "file_max_bytes": FILE_MAX_BYTES,
-                    "total_max_bytes": TOTAL_ATTACHMENT_MAX_BYTES,
-                },
+        if self.native:
+            self.native_task = asyncio.create_task(self.receive_native())
+        self.background_task = asyncio.create_task(
+            pump_background(
+                lambda: getattr(self.backend, "background", None),
+                self.idle,
+                self.background_turn,
             )
         )
+
+    async def receive_native(self) -> None:
+        """Persist native responses independently of user input and viewers."""
+        assert self.native
+        try:
+            async for outgoing in self.native.events():
+                if outgoing.type == "response_start":
+                    self.native_responding = True
+                    self.idle.clear()
+                    self.terminal = False
+                    self.seq = self.store.next_seq(self.session.id)
+                    self.store.put_turn(self.session.id, self.seq, "assistant", [])
+                    origin = outgoing.data.get("origin", {})
+                    if origin.get("kind") != "human":
+                        self.store.append_frame(
+                            self.session.id,
+                            self.seq,
+                            frame(
+                                "notice",
+                                level="info",
+                                source="claude_event",
+                                origin=origin,
+                                text="Claude background response",
+                            ).to_wire(),
+                        )
+                    self.clock = TurnClock()
+                    self.transient = []
+                    self.channel.begin(self.history())
+                    await self.send(frame("monitor", history=self.channel.history))
+                elif outgoing.type == "response_end":
+                    origin = outgoing.data.get("origin")
+                    if not origin or origin.get("kind") == "human":
+                        self.native_waiting = False
+                    await self.finish()
+                    self.native_responding = False
+                    if self.native_waiting:
+                        self.channel.begin(self.history())
+                        await self.send(frame("monitor", history=self.channel.history))
+                    self.mark_idle()
+                elif self.native_responding:
+                    if outgoing.type in {"final", "error", "cancelled"}:
+                        self.terminal = True
+                    await self.send(outgoing, transcript=True)
+                else:
+                    # A lifecycle notification need not start a model response.
+                    # Save it as a note and publish an idle snapshot so an older
+                    # HTTP transcript reload cannot erase it.
+                    seq = self.store.next_seq(self.session.id)
+                    self.store.put_turn(
+                        self.session.id, seq, "assistant", [outgoing.to_wire()]
+                    )
+                    history = self.history()
+                    if self.native_waiting:
+                        self.channel.begin(history)
+                    await self.send(
+                        frame("monitor", history=history, running=self.native_waiting)
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await self.send(frame("error", message=str(exc)), transcript=True)
+        finally:
+            if self.native_responding or self.native_waiting:
+                self.native_waiting = False
+                await self.finish()
+                self.native_responding = False
+            self.mark_idle()
+
+    def hello(self) -> dict[str, Any]:
+        return frame(
+            "hello",
+            session=self.session.id,
+            backend=self.session.backend,
+            model=self.session.model_label,
+            native_model=self.session.native_model,
+            workspace=self.session.workspace,
+            autonomy=self.session.autonomy,
+            title=self.session.title,
+            capabilities=self.backend.capabilities.to_wire(),
+            commands=getattr(self.backend, "commands_metadata", lambda: [])(),
+            limits={
+                "max_attachments": MAX_ATTACHMENTS,
+                "image_max_bytes": IMAGE_MAX_BYTES,
+                "file_max_bytes": FILE_MAX_BYTES,
+                "total_max_bytes": TOTAL_ATTACHMENT_MAX_BYTES,
+            },
+        ).to_wire()
+
+    def history(self) -> dict[str, Any]:
+        self.flush()
+        return {"turns": display_turns(self.store.turns(self.session.id))}
 
     async def finish(self) -> None:
         self.deny_pending()
@@ -232,33 +337,65 @@ class ChatConnection:
         self.seq = None
         self.transient = []
 
-    async def run(self, stream: AsyncIterator[Frame], *, editing: bool = False) -> None:
+    async def run(
+        self,
+        stream: AsyncIterator[Frame],
+        *,
+        editing: bool = False,
+        monitor: str | None = None,
+    ) -> None:
         try:
             async with aclosing(cast(AsyncGenerator[Frame, None], stream)):
+                if monitor is not None:
+                    await self.send(
+                        frame("monitor", text=monitor, history=self.channel.history)
+                    )
                 async for outgoing in stream:
                     if outgoing.type in {"final", "error", "cancelled"}:
                         self.terminal = True
                     await self.send(outgoing, transcript=True)
         except asyncio.CancelledError:
             raise
-        except WebSocketDisconnect:
-            self.closed = True
         except Exception as exc:
             await self.send(
                 frame("edit_rejected" if editing else "error", message=str(exc)),
                 transcript=True,
             )
         finally:
-            if not self.stopping and not self.closed:
+            if not self.stopping:
                 await self.finish()
 
     async def stop(self) -> None:
+        if self.native:
+            if not self.native_responding and not self.native.busy:
+                if not self.closed:
+                    await self.send(frame("stop_ignored"))
+                return
+            self.stopping = True
+            self.deny_pending()
+            try:
+                for outgoing in await self.backend.stop():
+                    await self.send(outgoing, transcript=True)
+                failed = bool(getattr(self.backend, "closed", False))
+                if self.native_responding or (self.native_waiting and failed):
+                    if failed:
+                        self.native_waiting = False
+                    await self.finish()
+                    self.native_responding = False
+                if failed and self.native_task:
+                    self.native_task.cancel()
+                    await asyncio.gather(self.native_task, return_exceptions=True)
+            finally:
+                self.stopping = False
+                self.mark_idle()
+            return
         task = self.turn_task
         if not task or task.done() or self.terminal:
             if not self.closed:
                 await self.send(frame("stop_ignored"))
             return
         self.stopping = True
+        self.idle.clear()
         self.deny_pending()
         try:
             # Backends drain their terminal response, or cancel and finalize their
@@ -272,8 +409,9 @@ class ChatConnection:
             await self.finish()
         finally:
             self.stopping = False
+            self.mark_idle()
 
-    async def input(self, msg: dict[str, Any]) -> None:
+    async def input(self, msg: dict[str, Any], *, background: bool = False) -> None:
         kind = msg.get("type")
         if kind == "approval_response":
             ident = msg.get("id")
@@ -321,6 +459,12 @@ class ChatConnection:
                     raise ValueError("select a nonempty, ordinary user message to edit")
                 self.seq = seq
                 stream = self.backend.edit(seq, text)
+                history = display_turns(
+                    [t for t in self.store.turns(self.session.id) if t["seq"] <= seq]
+                )
+                for item in history[-1]["frames"]:
+                    if item["type"] == "user":
+                        item["text"] = text
             else:
                 attachments = validate_attachments(msg.get("attachments"))
                 if not text.strip() and not attachments:
@@ -344,6 +488,7 @@ class ChatConnection:
                         {
                             "type": "user",
                             "text": text,
+                            "name": "monitor" if background else None,
                             "attachments": [
                                 a.model_dump(exclude={"fallback_text"})
                                 for a in attachments
@@ -351,19 +496,37 @@ class ChatConnection:
                         }
                     ],
                 )
+                if self.native:
+                    if self.session.title == "New chat":
+                        self.session.title = (text.strip() or "Attachments")[:80]
+                        self.store.save(self.session)
+                    self.native_waiting = True
+                    self.channel.begin(self.history())
+                    try:
+                        await self.native.submit(UserTurn(text, attachments))
+                    except BaseException:
+                        self.native_waiting = False
+                        raise
+                    return
                 # Separate assistant row keeps replay and message sequence semantics clear.
                 self.seq = seq + 1
                 self.store.put_turn(self.session.id, self.seq, "assistant", [])
-                if self.session.title == "New chat":
+                if self.session.title == "New chat" and not background:
                     self.session.title = (text.strip() or "Attachments")[:80]
                     self.store.save(self.session)
-                stream = self.backend.run_turn(UserTurn(text, attachments))
+                stream = self.backend.run_turn(UserTurn(text, attachments, background))
+                history = display_turns(self.store.turns(self.session.id)[:-1])
+            self.channel.begin({"turns": history})
             self.terminal = False
             self.transient = []
             self.clock = TurnClock()
+            self.idle.clear()
             self.turn_task = asyncio.create_task(
-                self.run(stream, editing=kind == "edit")
+                self.run(
+                    stream, editing=kind == "edit", monitor=text if background else None
+                )
             )
+            self.turn_task.add_done_callback(self.mark_idle)
         except (ValueError, TypeError) as exc:
             await self.send(
                 frame("edit_rejected" if kind == "edit" else "error", message=str(exc))
@@ -371,21 +534,39 @@ class ChatConnection:
             if kind == "user":
                 await self.send(frame("turn_end"))
 
-    async def serve(self) -> None:
-        await self.start()
-        while True:
+    async def serve(self, ws: WebSocket) -> None:
+        if not self.started:
+            await self.start()
+        await self.channel.attach(
+            ws,
+            self.hello,
+            self.history,
+            lambda: [
+                request.to_wire()
+                for ident, request in self.requests.items()
+                if ident in self.pending and not self.pending[ident].done()
+            ],
+        )
+        while not self.closed and self.channel.viewer is ws:
             try:
-                msg = await self.ws.receive_json()
+                msg = await ws.receive_json()
             except ValueError:
                 await self.send(frame("error", message="invalid JSON message"))
                 continue
+            if self.channel.viewer is not ws:
+                break
             if isinstance(msg, dict):
                 await self.input(msg)
             else:
                 await self.send(frame("error", message="message must be an object"))
 
     async def close(self) -> None:
+        if self.closed:
+            return
         self.closed = True
+        if self.background_task is not None:
+            self.background_task.cancel()
+            await asyncio.gather(self.background_task, return_exceptions=True)
         self.deny_pending()
         try:
             await self.stop()
@@ -394,8 +575,15 @@ class ChatConnection:
             if task and not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
-            self.flush()
-            await self.backend.close()
+            try:
+                self.flush()
+            finally:
+                try:
+                    await self.backend.close()
+                finally:
+                    if self.native_task:
+                        self.native_task.cancel()
+                        await asyncio.gather(self.native_task, return_exceptions=True)
 
 
 def create_app(
@@ -412,18 +600,29 @@ def create_app(
     profiles = ProfileCache()
     token = auth_token or secrets.token_urlsafe(32)
     attached: dict[str, ChatConnection | None] = {}
+    shutting_down = False
     model_lock = asyncio.Lock()
     models_loaded = False
     model_notice: str | None = None
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        nonlocal shutting_down
         try:
             yield
         finally:
-            for conn in list(attached.values()):
-                if conn:
-                    await conn.close()
+            shutting_down = True
+            # Signal every session before waiting for any one backend to exit.
+            results = await asyncio.gather(
+                *(conn.close() for conn in list(attached.values()) if conn),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, BaseException):
+                    logging.getLogger(__name__).error(
+                        "Session shutdown failed (%s)", type(result).__name__
+                    )
+            attached.clear()
             profiles.close()
             store.close()
 
@@ -432,6 +631,7 @@ def create_app(
     app.state.auth_token = token
     app.state.catalog = models_catalog
     app.state.store = store
+    app.state.sessions = attached
 
     def token_ok(value: str | None) -> bool:
         return not require_auth or bool(value and secrets.compare_digest(value, token))
@@ -490,6 +690,9 @@ def create_app(
     @app.get("/api/sessions/{sid}", dependencies=[Depends(auth)])
     async def transcript(sid: str) -> dict[str, Any]:
         rec = get(sid)
+        conn = attached.get(sid)
+        if conn:
+            conn.flush()
         return {**rec.to_wire(), "turns": display_turns(store.turns(sid))}
 
     @app.patch("/api/sessions/{sid}", dependencies=[Depends(auth)])
@@ -506,8 +709,17 @@ def create_app(
 
     @app.delete("/api/sessions/{sid}", dependencies=[Depends(auth)])
     async def delete(sid: str) -> dict[str, bool]:
-        if sid in attached:
-            raise HTTPException(409, "session is open in a connected tab")
+        conn = attached.get(sid)
+        if sid in attached and (
+            conn is None or conn.channel.viewer is not None or conn.busy
+        ):
+            raise HTTPException(409, "session is connected or still running")
+        if conn:
+            attached[sid] = None
+            try:
+                await conn.close()
+            finally:
+                attached.pop(sid, None)
         if not store.delete(sid):
             raise HTTPException(404, "unknown session")
         return {"ok": True}
@@ -521,6 +733,7 @@ def create_app(
         backend = conn.backend if conn else backend_factory(rec, store, profiles)
         if conn:
             conn.forking = True
+            conn.idle.clear()
         else:
             attached[sid] = None
 
@@ -538,6 +751,7 @@ def create_app(
         finally:
             if conn:
                 conn.forking = False
+                conn.mark_idle()
             else:
                 try:
                     await backend.close()
@@ -591,6 +805,9 @@ def create_app(
             await ws.close(code=4401)
             return
         await ws.accept()
+        if shutting_down:
+            await ws.close(code=1012)
+            return
         rec = store.get(session) if session else None
         if rec is None:
             await ws.send_json(
@@ -601,18 +818,35 @@ def create_app(
             )
             await ws.close(code=4404)
             return
-        if rec.id in attached:
+        conn = attached.get(rec.id)
+        if rec.id in attached and (
+            conn is None or conn.channel.viewer is not None or not conn.started
+        ):
             await ws.send_json({"type": "session_busy", "session": rec.id})
             await ws.close(code=4409)
             return
-        attached[rec.id] = None
-        conn: ChatConnection | None = None
+        # A dead native reader cannot recover by reattaching its old socket.
+        # Rebuild the CLI from the saved native session on the next connection.
+        retired = (
+            conn if conn and conn.native_task and conn.native_task.done() else None
+        )
+        if retired:
+            conn = None
+        if conn:
+            conn.channel.viewer = ws  # reserve without streaming before hello
+        else:
+            attached[rec.id] = None
         try:
-            if not Path(rec.workspace).is_dir():
-                raise ValueError("the session workspace no longer exists")
-            conn = ChatConnection(ws, rec, store, backend_factory(rec, store, profiles))
-            attached[rec.id] = conn
-            await conn.serve()
+            if retired:
+                await retired.close()
+            if conn is None:
+                if not Path(rec.workspace).is_dir():
+                    raise ValueError("the session workspace no longer exists")
+                conn = ChatConnection(
+                    ws, rec, store, backend_factory(rec, store, profiles)
+                )
+                attached[rec.id] = conn
+            await conn.serve(ws)
         except WebSocketDisconnect:
             pass
         except Exception as exc:
@@ -622,10 +856,11 @@ def create_app(
             except (WebSocketDisconnect, RuntimeError):
                 pass
         finally:
-            try:
+            if conn:
+                conn.channel.detach(ws)
+            if conn is None or not conn.started:
                 if conn:
                     await conn.close()
-            finally:
                 attached.pop(rec.id, None)
 
     @app.get("/")

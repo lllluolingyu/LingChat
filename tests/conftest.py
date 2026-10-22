@@ -9,7 +9,7 @@ from tests.agentgui_fakes.llm import FakeLLM
 
 
 @pytest.fixture
-def app_factory(tmp_path: Path):
+async def app_factory(tmp_path: Path):
     apps = []
 
     def make(turns=None, tools=None, autonomy="ask"):
@@ -46,4 +46,5 @@ def app_factory(tmp_path: Path):
 
     yield make
     for app in apps:
-        app.state.store.close()
+        async with app.router.lifespan_context(app):
+            pass

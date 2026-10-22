@@ -1,4 +1,5 @@
 # Adapted from LingChat bridge/session/auth tests; Apache-2.0.
+import asyncio
 import base64
 from pathlib import Path
 
@@ -142,16 +143,81 @@ async def test_stop_pending_approval_and_next_turn(app_factory):
         assert any(f["type"] == "final" for f in frames)
 
 
-async def test_disconnect_cancels_stream_and_releases_lease(app_factory):
+async def test_disconnect_keeps_stream_and_reconnect_can_stop(app_factory):
     app, rec, _ = app_factory([{"wait": True}, {"text": "resumed"}])
     async with Socket(app, rec.id) as ws:
         await ws.recv()
         await ws.send({"type": "user", "text": "slow"})
         await ws.until("text")
+    runtime = app.state.sessions[rec.id]
+    assert runtime.busy and runtime.channel.ws is None
     async with Socket(app, rec.id) as ws:
-        assert (await ws.recv())["type"] == "hello"
+        hello = await ws.recv()
+        assert hello["running"]
+        assert (
+            "".join(f["delta"] for f in hello["replay"] if f["type"] == "text")
+            == "working"
+        )
+        await ws.send({"type": "user", "text": "cannot overlap"})
+        assert (await ws.recv())["type"] == "turn_busy"
+        await ws.send({"type": "stop"})
+        assert any(f["type"] == "cancelled" for f in await ws.until("turn_end"))
         await ws.send({"type": "user", "text": "resume"})
         assert any(f["type"] == "final" for f in await ws.until("turn_end"))
+    assert app.state.sessions[rec.id] is runtime
+
+
+async def test_detached_turn_finishes_and_is_saved(app_factory):
+    gate = asyncio.Event()
+    app, rec, fake = app_factory([{"wait": gate, "text": " completed"}])
+    async with Socket(app, rec.id) as ws:
+        await ws.recv()
+        await ws.send({"type": "user", "text": "work offline"})
+        await ws.until("text")
+    runtime = app.state.sessions[rec.id]
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=AUTH
+    ) as client:
+        assert (await client.delete(f"/api/sessions/{rec.id}")).status_code == 409
+    gate.set()
+    await asyncio.wait_for(asyncio.shield(runtime.turn_task), 5)
+    async with Socket(app, rec.id) as ws:
+        hello = await ws.recv()
+        assert not hello["running"] and not hello["replay"]
+        assert "working completed" in str(hello["history"])
+    assert len(fake.messages) == 1
+
+
+async def test_detached_approval_waits_and_replays_on_reconnect(app_factory):
+    app, rec, _ = app_factory(
+        [
+            {
+                "tool_calls": [
+                    ToolCall(
+                        id="read",
+                        name="run_shell",
+                        arguments={"command": "echo approved"},
+                    )
+                ]
+            },
+            {"text": "done"},
+        ],
+        ["run_shell"],
+    )
+    async with Socket(app, rec.id) as ws:
+        await ws.recv()
+        await ws.send({"type": "user", "text": "run"})
+        prompt = (await ws.until("approval"))[-1]
+    runtime = app.state.sessions[rec.id]
+    assert runtime.busy and len(runtime.pending) == 1
+    async with Socket(app, rec.id) as ws:
+        hello = await ws.recv()
+        assert hello["approvals"] == [prompt]
+        await ws.send(
+            {"type": "approval_response", "id": prompt["id"], "decision": "once"}
+        )
+        frames = await ws.until("turn_end")
+        assert any(f["type"] == "tool_result" and f["ok"] for f in frames)
 
 
 async def test_edit_and_native_fork(app_factory):

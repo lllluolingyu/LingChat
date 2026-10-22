@@ -101,8 +101,13 @@ async def check(browser, gui):
     page = await context.new_page()
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
+    payload = history(gui)
     hello = {
         "type": "hello",
+        "history": payload,
+        "running": False,
+        "replay": [],
+        "approvals": [],
         "session": "session-a",
         "title": "Browser regression",
         "agent": "Test",
@@ -144,7 +149,6 @@ async def check(browser, gui):
         + json.dumps(hello)
         + ");"
     )
-    payload = history(gui)
     history_gate = None
     history_requested = asyncio.Event()
 
@@ -346,6 +350,115 @@ async def check(browser, gui):
     await page.wait_for_timeout(50)
     assert await page.locator(".attachment-chip").count() == 0
     assert await page.locator(".session-select button").count() == 0
+
+    # Reattach synchronously to a running turn: replay the partial answer and
+    # pending approval before new deltas arrive, without an HTTP replay race.
+    resumed = {
+        **hello,
+        "session": "session-b",
+        "history": payload,
+        "running": True,
+        "replay": [{"type": "text", "delta" if gui else "text": "Saved progress"}],
+        "approvals": [{**request, "id": "resume-approval"}],
+    }
+    await page.evaluate("hello => __emit(hello)", resumed)
+    assert await page.locator("#stop").is_visible()
+    assert await page.locator("#send").is_hidden()
+    assert await page.locator("#confirm").evaluate("e => e.open")
+    await page.locator("#confirm-allow").click()
+    assert await page.evaluate("__sent.at(-1).id") == "resume-approval"
+    await page.evaluate("__emit({type:'text',text:' continues',delta:' continues'})")
+    await page.wait_for_timeout(100)
+    assert await page.get_by_text("Saved progress continues", exact=True).count() == 1
+    await page.evaluate("__emit({type:'cancelled'}); __emit({type:'turn_end'})")
+    await wait(page, "!document.querySelector('#attach').disabled")
+
+    # An automatic monitor turn can arrive while the prior transcript reload
+    # is still in flight. Its snapshot must win, and the user's draft survives.
+    await page.locator("#input").fill("draft kept while watching")
+    history_gate = asyncio.Event()
+    history_requested.clear()
+    await page.evaluate("__emit({type:'turn_end'})")
+    await asyncio.wait_for(history_requested.wait(), 3)
+    monitor_text = "Monitor event: build passed"
+    monitor_history = (
+        {
+            "turns": [
+                {
+                    "seq": 900,
+                    "role": "user",
+                    "frames": [
+                        {"type": "user", "name": "monitor", "text": monitor_text}
+                    ],
+                }
+            ]
+        }
+        if gui
+        else {
+            "messages": [
+                {"seq": 900, "role": "user", "name": "monitor", "text": monitor_text}
+            ],
+            "events": [],
+        }
+    )
+    await page.evaluate("history => __emit({type:'monitor', history})", monitor_history)
+    await page.evaluate(
+        "__emit({type:'text',text:'Automatic response',delta:'Automatic response'})"
+    )
+    history_gate.set()
+    history_gate = None
+    await page.wait_for_timeout(100)
+    assert await page.locator("#input").input_value() == "draft kept while watching"
+    assert await page.get_by_text(monitor_text, exact=True).count() == 1
+    assert await page.get_by_text("Automatic response", exact=True).count() == 1
+    assert await page.locator("#stop").is_visible()
+    await page.evaluate("__emit({type:'turn_end'})")
+    await wait(page, "!document.querySelector('#attach').disabled")
+    await page.locator("#input").fill("")
+
+    if gui:
+        # Native task lifecycle notices arrive even when Claude is idle. They
+        # update history without enabling Stop or destroying the user's draft.
+        await page.locator("#input").fill("draft during native notification")
+        notice_history = {
+            "turns": [
+                {
+                    "seq": 901,
+                    "role": "assistant",
+                    "frames": [
+                        {
+                            "type": "notice",
+                            "source": "claude_task",
+                            "level": "info",
+                            "text": "Task watch-1 completed",
+                        },
+                        {
+                            "type": "notice",
+                            "source": "claude_event",
+                            "level": "info",
+                            "text": "Native monitor event",
+                        },
+                    ],
+                }
+            ]
+        }
+        await page.evaluate(
+            "history => __emit({type:'monitor', history, running:false})",
+            notice_history,
+        )
+        assert await page.get_by_text("Task watch-1 completed", exact=True).count() == 1
+        assert (
+            await page.locator(".note.monitor")
+            .filter(has_text="Native monitor event")
+            .count()
+            == 1
+        )
+        assert await page.locator("#stop").is_hidden()
+        assert (
+            await page.locator("#input").input_value()
+            == "draft during native notification"
+        )
+        await page.locator("#input").fill("")
 
     # A provider limit preserves partial text and exactly one warning, both
     # live and after history reload (including another reload later).

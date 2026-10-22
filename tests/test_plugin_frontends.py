@@ -249,7 +249,14 @@ def test_websession_stop_drains_notices_before_finalize(disconnect):
         session._turn_task = task
         session._tasks = {task}
         session._turn_terminal = False
-        session.ws = SimpleNamespace(send_json=send)
+        from lingchat.live import LiveChannel
+
+        session.channel = LiveChannel(SimpleNamespace(send_json=send))
+        session._closed = False
+        session._pending_confirms = {}
+        session._background_task = None
+        session._idle = asyncio.Event()
+        session._stopping = False
         if disconnect:
             await session.aclose()
         else:

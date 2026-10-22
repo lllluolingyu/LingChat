@@ -52,7 +52,15 @@ def tool_kind(name: str) -> str:
     key = name.lower()
     if key.startswith("mcp__") or key == "mcptoolcall":
         return "mcp"
-    if key in {"bash", "run_shell", "process_start", "commandexecution", "shell"}:
+    if key in {
+        "bash",
+        "monitor",
+        "run_shell",
+        "process_start",
+        "process_monitor",
+        "commandexecution",
+        "shell",
+    }:
         return "shell"
     if key in {
         "edit",

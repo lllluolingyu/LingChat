@@ -316,6 +316,11 @@ async function fetchHistory(id, gen) {
   if (data.title) setChatTitle(data.title);
 }
 
+export function renderSnapshot(data) {
+  threadGen++; // invalidate any older HTTP replay before attaching the live stream
+  renderHistory(data.turns || []);
+}
+
 function renderHistory(turns) {
   const view = captureThreadView();
   clearThread(true);
@@ -328,7 +333,10 @@ function renderHistory(turns) {
     for (const frame of turn.frames) {
       switch (frame.type) {
         case "user":
-          flush(); addUserMessage(frame.text, frame.attachments || [], Boolean(frame.name), turn.seq); break;
+          flush();
+          if (frame.name === "monitor") addNote("monitor", frame.text);
+          else addUserMessage(frame.text, frame.attachments || [], Boolean(frame.name), turn.seq);
+          break;
         case "text": text += frame.delta || ""; sawText = true; break;
         case "thinking": flush(); appendThinking(frame.delta || ""); break;
         case "tool_call":
@@ -349,7 +357,7 @@ function renderHistory(turns) {
         case "plugin_notice": flush(); addPluginNote(frame); break;
         case "notice":
           if (frame.discarded_chars) text = "";
-          flush(); addNote(frame.level === "warning" ? "error" : "system", frame.text); break;
+          flush(); addNote(frame.source === "claude_event" ? "monitor" : frame.level === "warning" ? "error" : "system", frame.text); break;
       }
     }
     flush(turn.seq);

@@ -35,6 +35,7 @@ import {
   newChat,
   refreshChatTitle,
   refreshSessions,
+  renderSnapshot,
   setChatTitle,
   takePendingForkEdit,
 } from "./sessions.js";
@@ -166,6 +167,14 @@ const commands = createCommandMenu({
 
 function handle(msg) {
   switch (msg.type) {
+    case "monitor":
+      transcriptSyncGeneration++;
+      transcriptSyncing = false;
+      renderSnapshot(msg.history || {});
+      setTurnActive(msg.running !== false);
+      if (msg.running !== false) showTyping();
+      else hideTyping();
+      break;
     case "hello": {
       updateLimits(msg.limits);
       commands.setCommands(msg.commands);
@@ -186,9 +195,20 @@ function handle(msg) {
       clearThread();
       setChatTitle(msg.title || "");
 
-      reloadTranscript().then(() => {
+      // The server snapshots history and the active stream in one handshake.
+      // Rendering it synchronously avoids a history fetch erasing new deltas.
+      transcriptSyncGeneration++;
+      transcriptSyncing = false;
+      resetConfirms();
+      renderSnapshot(msg.history || {});
+      setTurnActive(Boolean(msg.running));
+      if (msg.running) showTyping();
+      for (const event of msg.replay || []) handle(event);
+      for (const approval of msg.approvals || []) handle(approval);
+      refreshSessions();
+      {
         const pending = takePendingForkEdit(msg.session);
-        if (!pending) return;
+        if (!pending || msg.running) break;
         if (!wsSend({ type: "edit", seq: pending.seq, text: pending.text })) {
           addNote("error", t("note.fork_regen_failed"));
           return;
@@ -196,7 +216,7 @@ function handle(msg) {
 
         setTurnActive(true);
         showTyping();
-      });
+      }
       break;
     }
     case "turn_busy":
@@ -298,7 +318,7 @@ function handle(msg) {
       break;
     case "notice":
       if (msg.discarded_chars && isStreaming()) discardAgentMessage();
-      addNote(msg.level === "warning" ? "error" : "system", msg.text || "");
+      addNote(msg.source === "claude_event" ? "monitor" : msg.level === "warning" ? "error" : "system", msg.text || "");
       break;
     case "usage":
       recordUsage(msg);

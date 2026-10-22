@@ -1,8 +1,8 @@
 """Tests for the LingChat auth boundary and WebSocket turn lifecycle.
 
 Covers origin/token authentication, per-id confirmation routing (no misrouted
-approvals under parallel tool calls), and turn cancellation + lease release on
-disconnect.
+approvals under parallel tool calls), detached streaming, and cancellation on
+explicit Stop or server shutdown.
 """
 
 from __future__ import annotations
@@ -219,14 +219,8 @@ def test_two_simultaneous_confirms_routed_by_id(tmp_path):
         assert any(m["type"] == "final" and m["text"] == "both done" for m in msgs)
 
 
-# --- disconnect cancels the in-flight turn and releases the lease ----------
-#
-# The end-to-end path (disconnect mid-confirmation -> server cancels the turn
-# -> session lease released, so DELETE/reattach succeed) is verified manually
-# and by the deterministic unit test below. A full TestClient e2e version is
-# omitted here: stacking many sync WebSocket TestClient sessions in one process
-# accumulates event-loop state that makes cross-connection lease timing flaky
-# under pytest, though the behavior is correct under a real server.
+# --- transport failures, explicit Stop, and server-owned cleanup ------------
+# End-to-end detach/reattach and shutdown are covered in test_live_sessions.py.
 
 
 class _FakeWS:
@@ -290,8 +284,8 @@ class _DisconnectingWS(_FakeWS):
         await super().send_json(msg)
 
 
-async def test_outbound_disconnect_closes_agent_stream_before_returning(tmp_path):
-    """A failed send repairs the lease without finalizing from its driver."""
+async def test_outbound_disconnect_keeps_agent_stream_running(tmp_path):
+    """A failed send detaches the viewer while the answer still commits."""
     from lingcore.config import AgentProfile
     from lingcore.message import UserInput
 
@@ -315,10 +309,13 @@ async def test_outbound_disconnect_closes_agent_stream_before_returning(tmp_path
     # Explicit stream ownership makes cleanup synchronous with _run_turn: the
     # accepted user input remains, but no turn lease or partial answer does.
     assert session.agent._turn_checkpoint is None
-    assert [message.content for message in session.agent.memory.messages] == ["first"]
+    assert [message.content for message in session.agent.memory.messages] == [
+        "first",
+        "disconnected reply",
+    ]
 
     ws = _FakeWS()
-    session.ws = ws
+    session.channel.ws = ws
     await session._run_turn(UserInput(text="second"))
     assert any(msg["type"] == "final" and msg["text"] == "recovered" for msg in ws.sent)
     assert ws.sent[-1] == {"type": "turn_end"}
@@ -326,8 +323,8 @@ async def test_outbound_disconnect_closes_agent_stream_before_returning(tmp_path
 
 async def test_aclose_cancels_in_flight_turn(tmp_path):
     # aclose() must cancel a turn blocked awaiting a confirmation (e.g. a
-    # long/pending run_shell), so a disconnect never leaves a detached agent
-    # running on the session after the lease is released.
+    # long/pending run_shell), so shutdown waits for all work before closing
+    # the session store.
     import asyncio
 
     from lingcore.config import AgentProfile

@@ -196,12 +196,16 @@ def test_resume_restores_history(tmp_path):
     fake2 = FakeLLM([{"text": "second answer"}])
     fakes = [fake1, fake2]
     app = create_app(profile, require_auth=False, llm_factory=lambda: fakes.pop(0))
-    client = TestClient(app)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            sid = ws.receive_json()["session"]
+            ws.send_json({"type": "user", "text": "question one"})
+            _drain_until(ws, "turn_end")
 
-    with client.websocket_connect("/ws") as ws:
-        sid = ws.receive_json()["session"]
-        ws.send_json({"type": "user", "text": "question one"})
-        _drain_until(ws, "turn_end")
+    # Restart the server to exercise durable restoration, rather than live reattachment.
+    client = TestClient(
+        create_app(profile, require_auth=False, llm_factory=lambda: fakes.pop(0))
+    )
 
     with client.websocket_connect(f"/ws?session={sid}") as ws:
         hello = ws.receive_json()
@@ -306,26 +310,30 @@ def test_dynamic_skill_state_persists_and_replays_after_reconnect(tmp_path):
         require_auth=False,
         llm_factory=lambda: fakes.pop(0),
     )
-    client = TestClient(app)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            hello = ws.receive_json()
+            sid = hello["session"]
+            assert hello["event_cursor"] == -1
+            ws.send_json({"type": "user", "text": "activate review mode"})
+            frames = _drain_until(ws, "turn_end")
+            assert any(
+                frame == {"type": "skill", "name": "code-review", "active": True}
+                for frame in frames
+            )
 
-    with client.websocket_connect("/ws") as ws:
-        hello = ws.receive_json()
-        sid = hello["session"]
-        assert hello["event_cursor"] == -1
-        ws.send_json({"type": "user", "text": "activate review mode"})
-        frames = _drain_until(ws, "turn_end")
-        assert any(
-            frame == {"type": "skill", "name": "code-review", "active": True}
-            for frame in frames
+        transcript = client.get(f"/api/sessions/{sid}").json()
+        skill_event = next(
+            event for event in transcript["events"] if event["type"] == "skill_state"
         )
+        assert skill_event["active"] == ["code-review"]
+        assert skill_event["activated"] == ["code-review"]
+        assert skill_event["deactivated"] == []
 
-    transcript = client.get(f"/api/sessions/{sid}").json()
-    skill_event = next(
-        event for event in transcript["events"] if event["type"] == "skill_state"
+    # Restart the server to exercise durable restoration, rather than live reattachment.
+    client = TestClient(
+        create_app(profile, require_auth=False, llm_factory=lambda: fakes.pop(0))
     )
-    assert skill_event["active"] == ["code-review"]
-    assert skill_event["activated"] == ["code-review"]
-    assert skill_event["deactivated"] == []
 
     with client.websocket_connect(f"/ws?session={sid}") as ws:
         hello = ws.receive_json()
@@ -412,7 +420,7 @@ def test_sessions_disabled_profile(tmp_path):
     assert listing == {"enabled": False, "notice": None, "sessions": []}
 
     with client.websocket_connect("/ws") as ws:
-        assert ws.receive_json()["session"] is None
+        assert len(ws.receive_json()["session"]) == 32
         ws.send_json({"type": "user", "text": "hi"})
         msgs = _drain_until(ws, "turn_end")
         assert any(m["type"] == "final" for m in msgs)

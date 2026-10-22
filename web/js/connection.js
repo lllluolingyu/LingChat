@@ -1,8 +1,7 @@
 // Authenticated transport: the per-launch auth token, the REST wrapper, the
 // WebSocket lifecycle (connect/reconnect/switch), the connection status pill,
-// and the shell-confirmation queue — confirm state is connection state (each
-// pending id belongs to the server-side session on *this* socket), so it lives
-// and dies here.
+// and the local shell-confirmation queue. Pending approvals belong to the
+// server-side session; each handshake restores the viewer's queue.
 //
 // Cross-module needs (who is the current session, what to do with an inbound
 // message, refreshing the composer when connectivity flips) are injected via
@@ -137,9 +136,7 @@ export function connect() {
     if (stale()) return;
     abandonStreaming();
     hideTyping();
-    // Queued confirmations died with the socket: their ids belong to the old
-    // server-side session, so an answer sent later would just be ignored —
-    // don't leave a modal up asking about a command nothing is waiting on.
+    // The next handshake restores approvals still waiting on the server.
     resetConfirms();
     if (suppressReconnect) {
       setStatus("offline");

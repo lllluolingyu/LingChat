@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from lingcore.agent import Agent
+from lingcore.background import BackgroundInbox, BackgroundInput
 from lingcore.config import AgentProfile
 from lingcore.errors import INCOMPLETE_FINISH_REASONS, incomplete_response_message
 from lingcore.events import (
@@ -235,7 +236,7 @@ class LingCoreBackend(BackendBase):
         self.sync_history()
 
     def _build(self, llm: Any = None) -> Agent:
-        return Agent.from_profile(
+        agent = Agent.from_profile(
             self.profile,
             confirm=self.confirm,
             base_dir=Path(self.session.workspace),
@@ -244,6 +245,12 @@ class LingCoreBackend(BackendBase):
             session_store=self.native,
             session_id=self.session.native_id,
         )
+        agent.background.enabled = True
+        return agent
+
+    @property
+    def background(self) -> BackgroundInbox | None:
+        return self.agent.background if self.agent else None
 
     async def confirm(self, prompt: str) -> bool:
         # No level refuses on the user's behalf any more: under ``ask`` the empty
@@ -282,7 +289,8 @@ class LingCoreBackend(BackendBase):
         assert self.agent
         catalog = getattr(self.agent, "commands", CommandCatalog())
         incoming = catalog.resolve(inp.text, reserved=()) or UserInput(text=inp.text)
-        incoming = UserInput(
+        input_type = BackgroundInput if inp.background else UserInput
+        incoming = input_type(
             text=incoming.text,
             display_text=incoming.display_text,
             attachments=inp.attachments,
@@ -298,7 +306,10 @@ class LingCoreBackend(BackendBase):
                         if isinstance(command, str):
                             if event.call.name == "run_shell":
                                 self.shell_commands.add(command)
-                            elif event.call.name == "process_start":
+                            elif event.call.name in {
+                                "process_start",
+                                "process_monitor",
+                            }:
                                 self.process_commands.add(command)
                     yield event_frame(event)
         finally:

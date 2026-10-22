@@ -63,6 +63,11 @@ for line in sys.stdin:
             ),
             flush=True,
         )
+        if any(
+            item.get("text") == "slow"
+            for item in message.get("params", {}).get("input", [])
+        ):
+            continue
         print(
             json.dumps(
                 {
@@ -70,6 +75,19 @@ for line in sys.stdin:
                     "params": {
                         "threadId": "fake-thread",
                         "turn": {"id": "fake-turn", "status": "completed"},
+                    },
+                }
+            ),
+            flush=True,
+        )
+    elif method == "turn/interrupt":
+        print(
+            json.dumps(
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "threadId": "fake-thread",
+                        "turn": {"id": "fake-turn", "status": "interrupted"},
                     },
                 }
             ),

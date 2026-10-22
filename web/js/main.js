@@ -24,6 +24,7 @@ import {
   loadThread,
   newChat,
   refreshSessions,
+  renderSnapshot,
   setChatTitle,
   takePendingForkEdit,
 } from "./sessions.js";
@@ -147,6 +148,14 @@ const commands = createCommandMenu({
 
 function handle(msg) {
   switch (msg.type) {
+    case "monitor":
+      transcriptSyncGeneration++;
+      transcriptSyncing = false;
+      pendingTurnNotes = [];
+      renderSnapshot(msg.history || {});
+      setTurnActive(true);
+      showTyping();
+      break;
     case "hello": {
       updateLimits(msg.limits);
       commands.setCommands(msg.commands);
@@ -161,9 +170,20 @@ function handle(msg) {
       clearThread();
       setChatTitle(msg.title || "");
       pendingTurnNotes = [];
-      reloadTranscript().then(() => {
+      // The server snapshots history and the active stream in one handshake.
+      // Rendering it synchronously avoids a history fetch erasing new deltas.
+      transcriptSyncGeneration++;
+      transcriptSyncing = false;
+      resetConfirms();
+      renderSnapshot(msg.history || {});
+      setTurnActive(Boolean(msg.running));
+      if (msg.running) showTyping();
+      for (const event of msg.replay || []) handle(event);
+      for (const approval of msg.approvals || []) handle(approval);
+      refreshSessions();
+      {
         const pending = takePendingForkEdit(msg.session);
-        if (!pending) return;
+        if (!pending || msg.running) break;
         if (!wsSend({ type: "edit", seq: pending.seq, text: pending.text })) {
           addNote("error", "The fork was created, but regeneration could not start.");
           return;
@@ -171,7 +191,7 @@ function handle(msg) {
         pendingTurnNotes = [];
         setTurnActive(true);
         showTyping();
-      });
+      }
       break;
     }
     case "turn_busy":
