@@ -52,7 +52,11 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from lingcore.agent import Agent
 from lingcore.config import AgentProfile
-from lingcore.errors import SessionError
+from lingcore.errors import (
+    INCOMPLETE_FINISH_REASONS,
+    SessionError,
+    incomplete_response_message,
+)
 from lingcore.events import (
     AgentEvent,
     Compacted,
@@ -236,8 +240,17 @@ def _event_to_msg(event: AgentEvent) -> dict[str, Any]:
             return {"type": "cancelled", "reason": reason}
         case Final(content):
             return {"type": "final", "text": content}
-        case Error(message):
-            return {"type": "error", "message": message}
+        case Error(message, finish_reason, partial_content):
+            return {
+                "type": "error",
+                "message": message,
+                **({"finish_reason": finish_reason} if finish_reason else {}),
+                **(
+                    {"partial_content": partial_content}
+                    if partial_content is not None
+                    else {}
+                ),
+            }
     return {"type": "unknown"}  # pragma: no cover - exhaustive match above
 
 
@@ -261,6 +274,15 @@ def _stored_to_display(seq: int, m: Message) -> dict[str, Any]:
             "seq": seq,
             "role": "assistant",
             "text": m.content,
+            **(
+                {
+                    "finish_reason": m.finish_reason,
+                    "error": m.finish_detail
+                    or incomplete_response_message(m.finish_reason),
+                }
+                if m.finish_reason in INCOMPLETE_FINISH_REASONS
+                else {}
+            ),
             "tool_calls": [
                 {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
                 for tc in m.tool_calls

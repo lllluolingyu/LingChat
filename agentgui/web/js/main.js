@@ -291,7 +291,8 @@ function handle(msg) {
       reloadTranscript();
       break;
     case "error":
-      finalizeAgentMessage();
+      if (isStreaming()) finalizeAgentMessage(msg.partial_content);
+      else if (msg.partial_content) addAgentMarkdown(msg.partial_content);
       hideTyping();
       addNote("error", msg.message);
       break;

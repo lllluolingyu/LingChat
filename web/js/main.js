@@ -278,10 +278,11 @@ function handle(msg) {
       }
       break;
     case "error":
-      finalizeAgentMessage();
+      if (isStreaming()) finalizeAgentMessage(msg.partial_content);
+      else if (msg.partial_content) addAgentMarkdown(msg.partial_content);
       hideTyping();
       addNote("error", msg.message);
-      pendingTurnNotes.push({ kind: "error", text: msg.message });
+      if (!msg.finish_reason) pendingTurnNotes.push({ kind: "error", text: msg.message });
       break;
     case "usage":
       recordUsage(msg);

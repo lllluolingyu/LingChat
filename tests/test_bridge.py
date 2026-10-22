@@ -11,6 +11,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+import pytest
+from lingcore.errors import LLMStreamError
+from lingcore.guardrails import NoopGuardrail
 from lingcore.llm import LLMChunk
 from lingcore.message import Message, ToolCall
 from starlette.testclient import TestClient
@@ -213,3 +216,39 @@ def test_shell_confirm_non_boolean_fails_closed(tmp_path):
     result = next(message for message in messages if message["type"] == "tool_result")
     assert result["ok"] is False
     assert "declined" in result["content"]
+
+
+@pytest.mark.parametrize("guarded", ["Partial answer", ""])
+def test_incomplete_response_is_visible_live_and_after_reload(
+    tmp_path, monkeypatch, guarded
+):
+    class Redactor(NoopGuardrail):
+        async def post_output(self, text):
+            assert text == "SECRET"
+            return guarded
+
+    monkeypatch.setattr("lingcore.agent.build_guardrail", lambda *args: Redactor())
+
+    class CutOffLLM:
+        async def stream(self, messages, tools=None):
+            yield LLMChunk(text_delta="SECRET")
+            raise LLMStreamError(
+                "reduce the thinking budget", retryable=False, finish_reason="length"
+            )
+
+    profile = _write_profile(tmp_path, tools=[])
+    app = create_app(profile, require_auth=False, llm_factory=CutOffLLM)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            sid = ws.receive_json()["session"]
+            ws.send_json({"type": "user", "text": "hi"})
+            messages = _drain_until(ws, "turn_end")
+            error = next(m for m in messages if m["type"] == "error")
+            assert error["finish_reason"] == "length"
+            assert error["partial_content"] == guarded
+            assert "reduce the thinking budget" in error["message"]
+            assert not any(m["type"] == "final" for m in messages)
+        saved = client.get(f"/api/sessions/{sid}").json()["messages"][-1]
+        assert saved["text"] == guarded
+        assert saved["finish_reason"] == "length"
+        assert saved["error"] == error["message"]

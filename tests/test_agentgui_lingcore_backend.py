@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
+from lingcore.errors import LLMStreamError
+from lingcore.guardrails import NoopGuardrail
 from lingcore.llm import LLMChunk
 
 from agentgui.backends.base import UserTurn
@@ -127,3 +130,52 @@ def test_lingcore_todos_become_frames_and_survive_history_rebuild(tmp_path: Path
         for t in turns
         for f in t["frames"]
     )
+
+
+@pytest.mark.parametrize("guarded", ["Partial answer", ""])
+async def test_incomplete_response_rebuild_preserves_one_error(tmp_path, guarded):
+    class Redactor(NoopGuardrail):
+        async def post_output(self, text):
+            assert text == "SECRET"
+            return guarded
+
+    class CutOffLLM:
+        async def stream(self, messages, tools=None):
+            yield LLMChunk(text_delta="SECRET")
+            raise LLMStreamError(
+                "reduce the thinking budget", retryable=False, finish_reason="length"
+            )
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    profile = tmp_path / "config.yaml"
+    profile.write_text(
+        f"name: fake\nworkspace: {workspace}\nllm:\n  model: fake\ntools: []\n"
+    )
+    store = Store(tmp_path / "gui.db")
+    cache = ProfileCache()
+    session = store.create(
+        ModelEntry("fake", "Fake", "lingcore", options={"profile": str(profile)}),
+        str(workspace),
+    )
+    backend = LingCoreBackend(store, cache, CutOffLLM)
+    try:
+        await backend.start(session, lambda request: asyncio.sleep(0, result="deny"))
+        backend.agent.guardrail = Redactor()
+        frames = [f.to_wire() async for f in backend.run_turn(UserTurn("hi"))]
+        errors = [f for f in frames if f["type"] == "error"]
+        assert len(errors) == 1 and errors[0]["finish_reason"] == "length"
+        assert errors[0]["partial_content"] == guarded
+        assert "reduce the thinking budget" in errors[0]["message"]
+        assert not any(f["type"] == "final" for f in frames)
+        backend.reconcile(errors)
+        backend.sync_history()
+        replay = [f for t in store.turns(session.id) for f in t["frames"]]
+        assert [f for f in replay if f["type"] == "error"] == errors
+        assert [f["delta"] for f in replay if f["type"] == "text"] == (
+            [guarded] if guarded else []
+        )
+    finally:
+        await backend.close()
+        cache.close()
+        store.close()

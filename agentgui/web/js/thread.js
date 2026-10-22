@@ -381,7 +381,7 @@ function appendAgentActions(col, raw, seq = null) {
 export function finalizeAgentMessage(finalText) {
   if (!streaming) return;
   if (streaming.rafId) cancelAnimationFrame(streaming.rafId);
-  if (finalText) streaming.raw = finalText;
+  if (finalText !== undefined && finalText !== null) streaming.raw = finalText;
   streaming.view.finish(streaming.raw);
   appendAgentActions(streaming.col, streaming.raw);
   streaming = null;

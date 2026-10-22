@@ -350,6 +350,7 @@ function renderHistory(messages, events = []) {
       for (const tc of m.tool_calls || []) {
         addToolCard(tc.id, tc.name, tc.arguments);
       }
+      if (m.error) addNote("error", m.error);
     } else if (m.role === "tool") {
       resolveToolCard(m.id, m.name, m.ok, m.content, m.attachments || []);
     }

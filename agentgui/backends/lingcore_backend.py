@@ -13,6 +13,7 @@ from typing import Any
 
 from lingcore.agent import Agent
 from lingcore.config import AgentProfile
+from lingcore.errors import INCOMPLETE_FINISH_REASONS, incomplete_response_message
 from lingcore.events import (
     Compacted,
     Error,
@@ -93,8 +94,17 @@ def event_frame(event: Any) -> Frame:
             )
         case Final(content):
             return frame("final", content=content)
-        case Error(message):
-            return frame("error", message=message)
+        case Error(message, finish_reason, partial_content):
+            return frame(
+                "error",
+                message=message,
+                **({"finish_reason": finish_reason} if finish_reason else {}),
+                **(
+                    {"partial_content": partial_content}
+                    if partial_content is not None
+                    else {}
+                ),
+            )
         case TurnCancelled(reason):
             return frame("cancelled", reason=reason)
         case TodoUpdated(todos):
@@ -369,6 +379,17 @@ class LingCoreBackend(BackendBase):
                     }
                     for tc in m.tool_calls
                 )
+                if m.finish_reason in INCOMPLETE_FINISH_REASONS:
+                    incomplete = event_frame(
+                        Error(
+                            m.finish_detail
+                            or incomplete_response_message(m.finish_reason),
+                            finish_reason=m.finish_reason,
+                            partial_content=m.content,
+                        )
+                    ).to_wire()
+                    frames.append(incomplete)
+                    kept.append(incomplete)
             else:
                 frames.append(
                     {

@@ -346,6 +346,52 @@ async def check(browser, gui):
     await page.wait_for_timeout(50)
     assert await page.locator(".attachment-chip").count() == 0
     assert await page.locator(".session-select button").count() == 0
+
+    # A provider limit preserves partial text and exactly one warning, both
+    # live and after history reload (including another reload later).
+    for index, partial in enumerate(["Partial answer survives reload.", ""]):
+        error = {
+            "type": "error",
+            "message": f"Model response incomplete: output limit (attempt {index}).",
+            "finish_reason": "length",
+            "partial_content": partial,
+        }
+        await page.locator("#input").fill("Show a partial response")
+        await page.locator("#input").press("Enter")
+        await page.evaluate("__emit({type:'text',text:'SECRET\\n\\nMore SECRET'})")
+        await page.evaluate("error => __emit(error)", error)
+        assert "SECRET" not in await page.locator("#thread").inner_text()
+        assert not await page.locator('.copy-btn[data-raw*="SECRET"]').count()
+        if partial:
+            assert await page.get_by_text(partial, exact=True).count() == 1
+        warning = page.locator(".note.error").filter(has_text=error["message"])
+        assert await warning.count() == 1
+        if gui:
+            payload["turns"].append(
+                {
+                    "seq": 61 + index,
+                    "frames": [{"type": "text", "delta": partial}, error],
+                }
+            )
+        else:
+            payload["messages"].append(
+                {
+                    "seq": 61 + index,
+                    "role": "assistant",
+                    "text": partial,
+                    "error": error["message"],
+                    "finish_reason": "length",
+                    "tool_calls": [],
+                }
+            )
+        for _ in range(2):
+            await page.evaluate("__emit({type:'turn_end'})")
+            await wait(page, "!document.querySelector('#attach').disabled")
+            if partial:
+                assert await page.get_by_text(partial, exact=True).count() == 1
+            assert await warning.count() == 1
+            assert "SECRET" not in await page.locator("#thread").inner_text()
+
     if gui:
         await page.locator("#new-chat").click()
         await wait(page, "document.querySelector('#new-model').options.length === 1")
