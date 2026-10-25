@@ -101,9 +101,10 @@ UIs share the accounting and rendering (`lingchat/shared/usage.js`,
 
 ## Install and run
 
-This checkout requires Python 3.11 or newer and LingCore 0.5.0 or a later 0.5.x
-(`lingcore>=0.5.0,<0.6.0`). A packaged installation resolves the compatible
-core automatically:
+This checkout requires Python 3.11 or newer and LingCore 0.5.1 or a later 0.5.x
+(`lingcore>=0.5.1,<0.6.0`). LingCore 0.5.0 lacks the background-session APIs this
+version imports. A packaged installation resolves the compatible core
+automatically:
 
 ```bash
 pip install lingchat
@@ -324,12 +325,21 @@ remain in each `web/js/` directory. AgentGUI injects its live `t()` function,
 while LingChat uses the shared modules' English defaults. The shared assets ship
 inside the `lingchat` package in both source and wheel installations.
 
-For the optional Chromium checks (real DOM/focus, replay, editing, attachment
-reads and the production CSP):
+CI runs the Chromium checks for both UIs (real DOM/focus, replay, editing,
+attachment reads and the production CSP). To run the same pinned browser tooling
+locally:
 
 ```bash
-uv run --with playwright playwright install chromium
-uv run --with playwright python tests/browser_smoke.py
+uv sync --locked --group browser
+uv run --locked --group browser playwright install chromium
+uv run --locked --group browser python tests/browser_smoke.py
 ```
 
 Set `CHROMIUM_EXECUTABLE` to reuse an existing Chromium installation.
+
+CI also lints both Python packages, runs JavaScript checks on Node 22, and smoke
+tests the built wheel outside the checkout. Development checks use LingCore
+`main`; a separate compatibility job builds the exact minimum LingCore release
+tag from package metadata, then installs both wheels in a fresh environment
+without source overrides. This checks released APIs independently of changes
+on LingCore `main`.

@@ -5,13 +5,36 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-26
+
+### Added
+
+- Both frontends retain server-owned sessions across tab closure, reloads and
+  conversation switches. Reconnecting restores partial output, running tools
+  and pending approvals before live events resume. Shutdown interrupts sessions
+  and closes their background processes.
+- LingCore monitor output can start background turns while no tab is open.
+  AgentGUI also consumes Claude Code's native monitor events continuously,
+  keeping injected input distinct from human messages and retaining approvals,
+  Stop, usage accounting and replay.
+
 ### Changed
 
+- Requires LingCore 0.5.1 or a later 0.5.x (`lingcore>=0.5.1,<0.6.0`), which
+  includes the background-session APIs missing from 0.5.0.
+- CI lints and format-checks both Python packages, runs both browser UIs through
+  Chromium using a pinned optional dependency group, and checks installed wheel
+  assets outside the source tree. A separate job tests wheels built from the
+  exact minimum LingCore release tag in a fresh environment.
 - AgentGUI's `ask` mode on LingCore keeps `calendar_list`, which only reads the
   profile's calendar; adding and removing events stays limited to `edit` mode.
 
 ### Fixed
 
+- Guarded incomplete replies and their diagnostics survive transcript replay
+  in both frontends.
+- AgentGUI rebuilds failed Claude clients from saved native sessions on
+  reconnect, including after an interrupted command fails to settle.
 - AgentGUI's `ask` mode on LingCore keeps web search again. Its read-only tool
   list named `web_search`, but LingCore's tool is `search_web`, so the mode
   silently dropped it.
@@ -295,7 +318,8 @@ Notable user-facing LingChat changes are documented here. The project follows
 - Initial browser frontend with authenticated WebSocket streaming, tool
   confirmation, multimodal attachments, and profile-scoped session history.
 
-[Unreleased]: https://github.com/lllluolingyu/LingChat/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/lllluolingyu/LingChat/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/lllluolingyu/LingChat/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/lllluolingyu/LingChat/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/lllluolingyu/LingChat/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/lllluolingyu/LingChat/compare/v0.4.0...v0.4.1

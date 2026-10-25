@@ -1,4 +1,4 @@
-"""Optional real-browser regression checks; see README for the Playwright command.
+"""Real-browser regression checks run in CI; see README for the local command.
 
 Serve the real ES modules/CSS with the production CSP through Playwright routes,
 while replacing only HTTP transcript data and the WebSocket transport.

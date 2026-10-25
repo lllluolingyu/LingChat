@@ -30,9 +30,9 @@ jobs:
       - run: uv python install 3.13
       - run: uv sync --locked --python 3.13
         working-directory: LingCore/LingChat
-      - run: uv run ruff check lingchat tests
+      - run: uv run ruff check lingchat agentgui scripts tests
         working-directory: LingCore/LingChat
-      - run: uv run ruff format --check lingchat tests
+      - run: uv run ruff format --check lingchat agentgui scripts tests
         working-directory: LingCore/LingChat
       - run: uv run mypy
         working-directory: LingCore/LingChat
@@ -63,11 +63,42 @@ jobs:
         working-directory: LingCore/LingChat
       - run: uv run --python ${{ matrix.python-version }} pytest -q
         working-directory: LingCore/LingChat
+
+  browser:
+    name: JavaScript and Chromium
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out LingCore main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: lllluolingyu/LingCore
+          ref: main
+          path: LingCore
+      - name: Check out LingChat
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: LingCore/LingChat
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - run: uv python install 3.13
+      - run: uv sync --locked --python 3.13 --group browser
+        working-directory: LingCore/LingChat
       - name: Check browser JavaScript syntax
         run: npm run check
         working-directory: LingCore/LingChat
       - name: Test shared browser behavior
         run: npm test
+        working-directory: LingCore/LingChat
+      - name: Install Chromium and system dependencies
+        run: uv run --locked --group browser playwright install --with-deps chromium
+        working-directory: LingCore/LingChat
+      - name: Test both browser UIs
+        run: uv run --locked --group browser python tests/browser_smoke.py
         working-directory: LingCore/LingChat
 
   package:
@@ -88,11 +119,60 @@ jobs:
         with:
           enable-cache: true
       - run: uv python install 3.13
+      - run: uv sync --locked --python 3.13
+        working-directory: LingCore/LingChat
       - run: uv build
         working-directory: LingCore/LingChat
+      - name: Install the wheel over the editable LingChat package
+        # This job checks current LingCore development; minimum-core below
+        # independently checks the dependency requirement against a release tag.
+        run: uv pip install --python .venv/bin/python --no-deps --reinstall dist/*.whl
+        working-directory: LingCore/LingChat
+      - name: Smoke test the installed wheel outside the checkout
+        run: |
+          "$GITHUB_WORKSPACE/LingCore/LingChat/.venv/bin/python" -I \
+            "$GITHUB_WORKSPACE/LingCore/LingChat/scripts/check-wheel.py"
+        working-directory: ${{ runner.temp }}
       - name: Verify tag matches package version
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-        run: uv run python -c 'import os, tomllib; data = tomllib.load(open("pyproject.toml", "rb")); expected = "v" + data["project"]["version"]; actual = os.environ["RELEASE_TAG"]; assert actual == expected, f"tag {actual} does not match package {expected}"'
+        run: .venv/bin/python -c 'import os, tomllib; data = tomllib.load(open("pyproject.toml", "rb")); expected = "v" + data["project"]["version"]; actual = os.environ["RELEASE_TAG"]; assert actual == expected, f"tag {actual} does not match package {expected}"'
         working-directory: LingCore/LingChat
+
+  minimum-core:
+    name: Released minimum LingCore
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: LingChat
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      - run: uv python install 3.13
+      - name: Read the minimum LingCore version from package metadata
+        id: minimum
+        run: |
+          uv run --no-project --python 3.13 python -c 'import tomllib; requirement = next(d for d in tomllib.load(open("pyproject.toml", "rb"))["project"]["dependencies"] if d.startswith("lingcore>=")); print("version=" + requirement.split(">=", 1)[1].split(",", 1)[0])' >> "$GITHUB_OUTPUT"
+        working-directory: LingChat
+      - name: Check out the minimum LingCore release
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: lllluolingyu/LingCore
+          ref: v${{ steps.minimum.outputs.version }}
+          path: minimum-core
+      - name: Build the minimum LingCore wheel
+        run: uv build --no-sources --wheel --out-dir "$RUNNER_TEMP/lingcore-dist"
+        working-directory: minimum-core
+      - run: uv build --no-sources
+        working-directory: LingChat
+      - name: Install the wheel with its minimum LingCore release
+        env:
+          CORE_MINIMUM: ${{ steps.minimum.outputs.version }}
+        run: |
+          uv venv "$RUNNER_TEMP/lingchat-wheel" --python 3.13
+          uv pip install --python "$RUNNER_TEMP/lingchat-wheel/bin/python" \
+            dist/*.whl "$RUNNER_TEMP"/lingcore-dist/*.whl "lingcore==$CORE_MINIMUM" httpx==0.28.1
+        working-directory: LingChat
+      - name: Smoke test the released dependency and installed assets
+        run: '"$RUNNER_TEMP/lingchat-wheel/bin/python" -I "$GITHUB_WORKSPACE/LingChat/scripts/check-wheel.py"'
+        working-directory: ${{ runner.temp }}
