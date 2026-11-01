@@ -329,7 +329,7 @@ attachment reads and the production CSP). To run the same pinned browser tooling
 locally:
 
 ```bash
-uv sync --locked --group browser
+uv sync --group browser
 uv run --locked --group browser playwright install chromium
 uv run --locked --group browser python tests/browser_smoke.py
 ```
@@ -338,7 +338,12 @@ Set `CHROMIUM_EXECUTABLE` to reuse an existing Chromium installation.
 
 CI also lints both Python packages, runs JavaScript checks on Node 22, and smoke
 tests the built wheel outside the checkout. Development checks use LingCore
-`main`; a separate compatibility job builds the exact minimum LingCore release
+`main`, so the initial sync reconciles its editable package metadata with
+`uv.lock`, retaining existing dependency versions wherever compatible. Later
+commands use `--locked` against that resolved graph. Dependency changes in
+LingChat should still include an updated lockfile.
+
+A separate compatibility job builds the exact minimum LingCore release
 tag from package metadata, then installs both wheels in a fresh environment
 without source overrides. This checks released APIs independently of changes
 on LingCore `main`.

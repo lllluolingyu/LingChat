@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+# Development jobs check out a moving LingCore main. The initial sync reconciles
+# its editable metadata with our lock, preferring existing dependency versions;
+# subsequent commands stay locked to that resolved graph.
 jobs:
   quality:
     name: Lint, format, and typecheck
@@ -28,13 +31,14 @@ jobs:
         with:
           enable-cache: true
       - run: uv python install 3.13
-      - run: uv sync --locked --python 3.13
+      - name: Resolve dependencies against LingCore main
+        run: uv sync --python 3.13
         working-directory: LingCore/LingChat
-      - run: uv run ruff check lingchat agentgui scripts tests
+      - run: uv run --locked ruff check lingchat agentgui scripts tests
         working-directory: LingCore/LingChat
-      - run: uv run ruff format --check lingchat agentgui scripts tests
+      - run: uv run --locked ruff format --check lingchat agentgui scripts tests
         working-directory: LingCore/LingChat
-      - run: uv run mypy
+      - run: uv run --locked mypy
         working-directory: LingCore/LingChat
 
   test:
@@ -59,9 +63,10 @@ jobs:
         with:
           enable-cache: true
       - run: uv python install ${{ matrix.python-version }}
-      - run: uv sync --locked --python ${{ matrix.python-version }}
+      - name: Resolve dependencies against LingCore main
+        run: uv sync --python ${{ matrix.python-version }}
         working-directory: LingCore/LingChat
-      - run: uv run --python ${{ matrix.python-version }} pytest -q
+      - run: uv run --locked --python ${{ matrix.python-version }} pytest -q
         working-directory: LingCore/LingChat
 
   browser:
@@ -86,7 +91,8 @@ jobs:
           node-version: "22"
           package-manager-cache: false
       - run: uv python install 3.13
-      - run: uv sync --locked --python 3.13 --group browser
+      - name: Resolve dependencies against LingCore main
+        run: uv sync --python 3.13 --group browser
         working-directory: LingCore/LingChat
       - name: Check browser JavaScript syntax
         run: npm run check
@@ -119,7 +125,8 @@ jobs:
         with:
           enable-cache: true
       - run: uv python install 3.13
-      - run: uv sync --locked --python 3.13
+      - name: Resolve dependencies against LingCore main
+        run: uv sync --python 3.13
         working-directory: LingCore/LingChat
       - run: uv build
         working-directory: LingCore/LingChat
