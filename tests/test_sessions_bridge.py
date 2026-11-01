@@ -382,29 +382,30 @@ def test_delete_and_rename(tmp_path):
     app = create_app(
         profile, require_auth=False, llm_factory=lambda: FakeLLM([{"text": "yo"}])
     )
-    client = TestClient(app)
+    # Keep the WebSocket and HTTP requests on the same application lifespan.
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            sid = ws.receive_json()["session"]
+            ws.send_json({"type": "user", "text": "hello"})
+            _drain_until(ws, "turn_end")
 
-    with client.websocket_connect("/ws") as ws:
-        sid = ws.receive_json()["session"]
-        ws.send_json({"type": "user", "text": "hello"})
-        _drain_until(ws, "turn_end")
+            # Attached: deletion refused so the live agent can't resurrect the row.
+            assert client.delete(f"/api/sessions/{sid}").status_code == 409
 
-        # Attached: deletion refused so the live agent can't resurrect the row.
-        assert client.delete(f"/api/sessions/{sid}").status_code == 409
+        r = client.patch(f"/api/sessions/{sid}", json={"title": "renamed chat"})
+        assert r.status_code == 200 and r.json()["title"] == "renamed chat"
+        assert (
+            client.patch(f"/api/sessions/{sid}", json={"title": "   "}).status_code
+            == 422
+        )
+        assert (
+            client.patch(f"/api/sessions/{'9' * 32}", json={"title": "x"}).status_code
+            == 404
+        )
 
-    r = client.patch(f"/api/sessions/{sid}", json={"title": "renamed chat"})
-    assert r.status_code == 200 and r.json()["title"] == "renamed chat"
-    assert (
-        client.patch(f"/api/sessions/{sid}", json={"title": "   "}).status_code == 422
-    )
-    assert (
-        client.patch(f"/api/sessions/{'9' * 32}", json={"title": "x"}).status_code
-        == 404
-    )
-
-    assert _delete_when_released(client, sid).status_code == 200
-    assert client.get(f"/api/sessions/{sid}").status_code == 404
-    assert client.delete(f"/api/sessions/{sid}").status_code == 404
+        assert _delete_when_released(client, sid).status_code == 200
+        assert client.get(f"/api/sessions/{sid}").status_code == 404
+        assert client.delete(f"/api/sessions/{sid}").status_code == 404
 
 
 def test_sessions_disabled_profile(tmp_path):
