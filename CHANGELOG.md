@@ -5,6 +5,14 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-01
+
+### Changed
+
+- Requires LingCore 0.6.x (`lingcore>=0.6.0,<0.7.0`), with native Responses
+  support and cross-process session ownership. Close existing frontends before
+  upgrading the session database to schema v3.
+
 ## [0.5.1] - 2026-10-26
 
 ### Added
@@ -318,7 +326,8 @@ Notable user-facing LingChat changes are documented here. The project follows
 - Initial browser frontend with authenticated WebSocket streaming, tool
   confirmation, multimodal attachments, and profile-scoped session history.
 
-[Unreleased]: https://github.com/lllluolingyu/LingChat/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/lllluolingyu/LingChat/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/lllluolingyu/LingChat/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/lllluolingyu/LingChat/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/lllluolingyu/LingChat/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/lllluolingyu/LingChat/compare/v0.4.1...v0.4.2
