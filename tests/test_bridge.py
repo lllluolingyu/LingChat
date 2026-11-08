@@ -86,6 +86,36 @@ def test_hello_then_streamed_text_and_final(tmp_path):
         assert any(m["type"] == "final" for m in msgs)
 
 
+@pytest.mark.parametrize("payload", ["", "{", "not json", "[]", "null", '"hello"'])
+def test_invalid_protocol_message_keeps_connection_usable(tmp_path, payload):
+    profile = _write_profile(tmp_path, tools=[])
+    app = create_app(
+        profile,
+        require_auth=False,
+        llm_factory=lambda: FakeLLM([{"text": "Still connected!"}]),
+    )
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            assert ws.receive_json()["type"] == "hello"
+
+            for _ in range(2):
+                ws.send_text(payload)
+                assert ws.receive_json() == {
+                    "type": "error",
+                    "message": "invalid protocol message",
+                }
+
+            ws.send_json({"type": "user", "text": "hi"})
+            msgs = _drain_until(ws, "turn_end")
+            assert "".join(m["text"] for m in msgs if m["type"] == "text") == (
+                "Still connected!"
+            )
+            assert any(
+                m["type"] == "final" and m["text"] == "Still connected!" for m in msgs
+            )
+            assert not any(m["type"] == "error" for m in msgs)
+
+
 def test_shell_confirm_round_trip_approved(tmp_path):
     profile = _write_profile(tmp_path, tools=["run_shell"])
     turns = [

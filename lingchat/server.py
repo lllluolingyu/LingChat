@@ -856,7 +856,13 @@ class WebSession:
             ],
         )
         while not self._closed and self.channel.viewer is ws:
-            msg = await ws.receive_json()
+            try:
+                msg = await ws.receive_json()
+            except ValueError:
+                await self._safe_send(
+                    {"type": "error", "message": "invalid protocol message"}
+                )
+                continue
             if self.channel.viewer is not ws:
                 break
             if not isinstance(msg, dict):
