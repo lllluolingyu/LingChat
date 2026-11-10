@@ -156,6 +156,25 @@ async def test_lingcore_reports_each_request_without_cumulating(tmp_path) -> Non
     assert kinds.index("usage") < kinds.index("final")
 
 
+def test_lingcore_rewrite_frame_keeps_purpose_during_history_replay():
+    from datetime import datetime, timezone
+
+    from lingcore.events import UsageReported
+    from lingcore.usage import TurnStats, turn_stats_from_payload, turn_stats_payload
+
+    from agentgui.backends.lingcore_backend import event_frame
+
+    usage = TokenUsage("editor", 40, 9, purpose="output_rewrite")
+    at = datetime.now(timezone.utc)
+    stored = turn_stats_payload(TurnStats((usage,), at, at, 20, 10))
+    replayed = turn_stats_from_payload(stored)
+    live = event_frame(UsageReported(usage)).to_wire()
+    replay = event_frame(UsageReported(replayed.usage[0])).to_wire()
+    assert live == replay
+    assert live["purpose"] == "output_rewrite"
+    assert live["input"] == 40 and live["output"] == 9
+
+
 def test_turn_clock_leaves_tool_and_approval_waits_out_of_model_time(
     monkeypatch,
 ) -> None:

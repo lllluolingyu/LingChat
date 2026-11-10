@@ -101,8 +101,8 @@ UIs share the accounting and rendering (`lingchat/shared/usage.js`,
 
 ## Install and run
 
-This checkout requires Python 3.11 or newer and LingCore 0.6.0 or a later 0.6.x
-(`lingcore>=0.6.0,<0.7.0`). A packaged installation resolves the compatible core
+This checkout requires Python 3.11 or newer and LingCore 0.6.1 or a later 0.6.x
+(`lingcore>=0.6.1,<0.7.0`). A packaged installation resolves the compatible core
 automatically:
 
 ```bash

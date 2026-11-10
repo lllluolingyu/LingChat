@@ -124,7 +124,7 @@ def event_frame(event: Any) -> Frame:
                 level="info",
                 text=f"Context compacted: {count} messages ({before} → {after} tokens).",
             )
-        case UsageReported(usage):
+        case UsageReported(usage, purpose):
             # One model request (reply, summarizer, or vision fallback);
             # LingCore reports only what the provider returned.
             return usage_frame(
@@ -143,6 +143,7 @@ def event_frame(event: Any) -> Frame:
                 input=usage.input_tokens,
                 output=usage.output_tokens,
                 cached=usage.cached_input_tokens,
+                purpose=purpose,
             )
         case TurnStatsReported(stats):
             # LingCore's own measurement; it supersedes the connection's clock.

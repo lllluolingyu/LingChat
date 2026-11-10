@@ -76,6 +76,17 @@ test("a session with no usage reports no rate, hit rate, context, or cost", () =
   assert.equal(ledger.summary().contextPct, 100);
 });
 
+test("rewrite usage contributes to spend without replacing the main context gauge", () => {
+  const ledger = createLedger();
+  ledger.begin();
+  ledger.usage({ scope: "request", input: 1000, output: 20, context_pct: 50 });
+  ledger.usage({
+    scope: "request", input: 40, output: 10, context_pct: 2, purpose: "output_rewrite",
+  });
+  assert.equal(ledger.summary().tokens.total, 1070);
+  assert.equal(ledger.summary().contextPct, 50);
+});
+
 test("token counts and reply times stay compact", () => {
   assert.equal(compactTokens(950), "950");
   assert.equal(compactTokens(12_345), "12.3K");

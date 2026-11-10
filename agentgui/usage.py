@@ -54,6 +54,7 @@ def usage_frame(
     cache_write: int = 0,
     cost_usd: float | None = None,
     context_pct: float | None = None,
+    purpose: str = "main",
 ) -> Frame:
     """Build a ``usage`` frame.
 
@@ -75,6 +76,7 @@ def usage_frame(
         scope=scope,
         cumulative=cumulative,
         models=models,
+        purpose=purpose,
     )
 
 

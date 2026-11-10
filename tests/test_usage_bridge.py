@@ -25,7 +25,9 @@ class MeteredLLM:
         if turn.get("text"):
             yield LLMChunk(text_delta=turn["text"])
         yield LLMChunk(tool_calls=turn.get("tool_calls"), finish_reason="stop")
-        self.meters[-1].record(TokenUsage("m", *turn["usage"]))
+        self.meters[-1].record(
+            TokenUsage("m", *turn["usage"], purpose=turn.get("purpose", "main"))
+        )
 
 
 def _drain_until(ws, stop_type: str) -> list[dict]:
@@ -70,7 +72,11 @@ def test_turn_stats_stream_live_and_replay_through_edit_and_fork(
         [
             {"tool_calls": [read], "usage": (100, 5, 80, 0)},
             {"text": "first answer", "usage": (120, 7, 100, 0)},
-            {"text": "second answer", "usage": (140, 9, 120, 0)},
+            {
+                "text": "second answer",
+                "usage": (140, 9, 120, 0),
+                "purpose": "output_rewrite",
+            },
             {"text": "edited answer", "usage": (90, 4, 0, 0)},
         ],
         meters,
@@ -92,7 +98,11 @@ def test_turn_stats_stream_live_and_replay_through_edit_and_fork(
             kinds.index("usage")
         ].items()
         ws.send_json({"type": "user", "text": "second question"})
-        _drain_until(ws, "turn_end")
+        second = _drain_until(ws, "turn_end")
+        assert (
+            next(m for m in second if m["type"] == "usage")["purpose"]
+            == "output_rewrite"
+        )
 
         # Each turn's stats are anchored to the user message that started it.
         assert _turn_stats(client, sid) == [
@@ -105,6 +115,12 @@ def test_turn_stats_stream_live_and_replay_through_edit_and_fork(
             if e["type"] == "turn_stats"
         )
         assert replayed["timing"]["type"] == "timing"
+        second_replay = [
+            e
+            for e in client.get(f"/api/sessions/{sid}").json()["events"]
+            if e["type"] == "turn_stats"
+        ][1]
+        assert second_replay["usage"][0]["purpose"] == "output_rewrite"
 
         forked = client.post(f"/api/sessions/{sid}/fork", json={"through_seq": 3})
         assert _turn_stats(client, forked.json()["id"]) == [(0, [(100, 5), (120, 7)])]

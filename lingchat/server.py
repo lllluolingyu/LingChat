@@ -157,7 +157,7 @@ def _validate_attachments(raw: object) -> list[Attachment]:
     return out
 
 
-def _usage_msg(usage: TokenUsage) -> dict[str, Any]:
+def _usage_msg(usage: TokenUsage, *, purpose: str | None = None) -> dict[str, Any]:
     """One model request's provider-reported tokens (reply, summarizer, or
     vision fallback). Advisory: this UI has no cost accounting. ``scope`` and
     ``cache_in_input`` match AgentGUI's frame, so both UIs share one ledger
@@ -171,6 +171,7 @@ def _usage_msg(usage: TokenUsage) -> dict[str, Any]:
         "reasoning": usage.reasoning_tokens,
         "scope": "request",
         "cache_in_input": True,
+        "purpose": purpose or usage.purpose,
     }
 
 
@@ -233,8 +234,8 @@ def _event_to_msg(event: AgentEvent) -> dict[str, Any]:
                 "reason": reason,
                 "discarded_chars": discarded_chars,
             }
-        case UsageReported(usage):
-            return _usage_msg(usage)
+        case UsageReported(usage, purpose):
+            return _usage_msg(usage, purpose=purpose)
         case TurnStatsReported(stats):
             return _timing_msg(stats)
         case TodoUpdated(todos):

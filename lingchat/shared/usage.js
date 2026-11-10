@@ -89,7 +89,11 @@ export function createLedger() {
       r.tokens = plus(r.tokens, tokens);
     }
     r.metered = true;
-    if (frame.context_pct != null && Number.isFinite(Number(frame.context_pct))) {
+    if (
+      frame.purpose !== "output_rewrite" &&
+      frame.context_pct != null &&
+      Number.isFinite(Number(frame.context_pct))
+    ) {
       contextPct = Math.max(0, Math.min(100, Number(frame.context_pct)));
     }
     // Every backend that reports cost reports a session running total.

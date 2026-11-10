@@ -5,6 +5,20 @@ Notable user-facing LingChat changes are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-10
+
+### Changed
+
+- Requires LingCore 0.6.1 or a later 0.6.x (`lingcore>=0.6.1,<0.7.0`) for
+  usage-purpose labels in live events and persisted turn statistics.
+
+### Fixed
+
+- LingChat and AgentGUI retain output-rewrite usage labels through live updates,
+  reconnects, and transcript replay. Rewrite requests count toward token totals
+  without replacing the main model's context gauge.
+- Malformed WebSocket JSON reports an error without closing the connection.
+
 ## [0.6.0] - 2026-11-01
 
 ### Changed
@@ -326,7 +340,8 @@ Notable user-facing LingChat changes are documented here. The project follows
 - Initial browser frontend with authenticated WebSocket streaming, tool
   confirmation, multimodal attachments, and profile-scoped session history.
 
-[Unreleased]: https://github.com/lllluolingyu/LingChat/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/lllluolingyu/LingChat/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/lllluolingyu/LingChat/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/lllluolingyu/LingChat/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/lllluolingyu/LingChat/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/lllluolingyu/LingChat/compare/v0.4.2...v0.5.0
